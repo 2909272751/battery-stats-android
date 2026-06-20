@@ -28,6 +28,7 @@ import android.view.Display;
 import android.view.Window;
 import android.view.animation.AccelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
+import android.view.animation.OvershootInterpolator;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -180,6 +181,7 @@ public class MainActivity extends Activity {
         boolean moduleOk = ModuleDataImporter.importRecent(database);
         insertLocalBatterySampleIfNeeded();
         configureSystemBars();
+        View oldPageView = currentPageView;
         if (root == null) {
             root = new LinearLayout(this);
             root.setOrientation(LinearLayout.VERTICAL);
@@ -195,7 +197,10 @@ public class MainActivity extends Activity {
             contentHost.animate().cancel();
             contentHost.setTranslationX(0);
             contentHost.setAlpha(1f);
-            contentHost.removeAllViews();
+            if (!samePage) {
+                contentHost.removeAllViews();
+                oldPageView = null;
+            }
         }
 
         previewPageView = null;
@@ -204,7 +209,24 @@ public class MainActivity extends Activity {
         currentPageView = pageView;
         contentHost.addView(pageView, new FrameLayout.LayoutParams(-1, -1));
         renderedPage = page;
-        if (!samePage && currentPageView != null) {
+        if (samePage && oldPageView != null && oldPageView != pageView) {
+            final View pageToRemove = oldPageView;
+            pageView.setAlpha(0f);
+            pageView.setTranslationY(dp(4));
+            pageToRemove.animate().cancel();
+            pageToRemove.animate()
+                    .alpha(0f)
+                    .setDuration(110)
+                    .setInterpolator(new DecelerateInterpolator(1.2f))
+                    .withEndAction(() -> contentHost.removeView(pageToRemove))
+                    .start();
+            pageView.animate()
+                    .alpha(1f)
+                    .translationY(0)
+                    .setDuration(150)
+                    .setInterpolator(new DecelerateInterpolator(1.6f))
+                    .start();
+        } else if (!samePage && currentPageView != null) {
             float dir = lastPageForAnimation >= 0 && page > lastPageForAnimation ? 1f : -1f;
             currentPageView.setTranslationX(dir * dp(42));
             currentPageView.setAlpha(0.18f);
@@ -249,6 +271,9 @@ public class MainActivity extends Activity {
         if (assignCurrentScroll && scroll != null && restoreY > 0) {
             final ScrollView restoreScroll = scroll;
             restoreScroll.post(() -> restoreScroll.scrollTo(0, restoreY));
+        }
+        if (assignCurrentScroll && restoreY == 0) {
+            animateCards(content);
         }
         return pageView;
     }
@@ -341,12 +366,20 @@ public class MainActivity extends Activity {
         TextView view = text(label, 15, true, target == page ? Color.WHITE : Color.rgb(52, 55, 58));
         view.setGravity(Gravity.CENTER);
         view.setBackground(rounded(target == page ? accentColor() : (isDarkMode() ? Color.rgb(34, 39, 46) : Color.WHITE), dp(12)));
-        view.setOnClickListener(v -> switchPage(target));
+        view.setOnClickListener(v -> {
+            press(v);
+            switchPage(target);
+        });
         return view;
     }
 
     private void switchPage(int target) {
         if (page == target) {
+            return;
+        }
+        if (contentHost != null && currentPageView != null) {
+            float syntheticDx = target > page ? -Math.max(1, contentHost.getWidth()) * 0.45f : Math.max(1, contentHost.getWidth()) * 0.45f;
+            switchPageWithSwipe(target, syntheticDx);
             return;
         }
         page = target;
@@ -364,17 +397,17 @@ public class MainActivity extends Activity {
         currentPageView.animate().cancel();
         currentPageView.animate()
                 .translationX(currentOut)
-                .alpha(0.18f)
-                .setDuration(180)
-                .setInterpolator(new AccelerateInterpolator(1.15f))
+                .alpha(0.35f)
+                .setDuration(230)
+                .setInterpolator(new AccelerateInterpolator(0.9f))
                 .start();
         if (previewPageView != null) {
             previewPageView.animate().cancel();
             previewPageView.animate()
                     .translationX(0)
                     .alpha(1f)
-                    .setDuration(220)
-                    .setInterpolator(new DecelerateInterpolator(1.7f))
+                    .setDuration(260)
+                    .setInterpolator(new DecelerateInterpolator(2.1f))
                     .withEndAction(() -> {
                         finishSwipeTo(target);
                     })
@@ -400,6 +433,8 @@ public class MainActivity extends Activity {
             currentPageView.animate().cancel();
             currentPageView.setTranslationX(0);
             currentPageView.setAlpha(1f);
+            currentPageView.setScaleX(1f);
+            currentPageView.setScaleY(1f);
             if (currentPageView instanceof ScrollView) {
                 currentScroll = (ScrollView) currentPageView;
             } else {
@@ -420,8 +455,10 @@ public class MainActivity extends Activity {
         currentPageView.animate()
                 .translationX(0)
                 .alpha(1f)
-                .setDuration(160)
-                .setInterpolator(new DecelerateInterpolator(1.6f))
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(190)
+                .setInterpolator(new OvershootInterpolator(0.45f))
                 .start();
         if (previewPageView != null) {
             float width = Math.max(1, contentHost.getWidth());
@@ -430,8 +467,10 @@ public class MainActivity extends Activity {
             previewPageView.animate()
                     .translationX(targetX)
                     .alpha(0.2f)
-                    .setDuration(160)
-                    .setInterpolator(new DecelerateInterpolator(1.6f))
+                    .scaleX(0.985f)
+                    .scaleY(0.985f)
+                    .setDuration(170)
+                    .setInterpolator(new DecelerateInterpolator(1.5f))
                     .withEndAction(() -> removeSwipePreview())
                     .start();
         }
@@ -452,7 +491,9 @@ public class MainActivity extends Activity {
             removeSwipePreview();
             previewTargetPage = target;
             previewPageView = buildPageView(target, false, ModuleDataImporter.importRecent(database), 0);
-            previewPageView.setAlpha(0.98f);
+            previewPageView.setAlpha(0.72f);
+            previewPageView.setScaleX(0.985f);
+            previewPageView.setScaleY(0.985f);
             contentHost.addView(previewPageView, new FrameLayout.LayoutParams(-1, -1));
         }
         float width = Math.max(1, contentHost.getWidth());
@@ -499,8 +540,16 @@ public class MainActivity extends Activity {
                 ensureSwipePreview(target, dx);
                 float width = Math.max(1, contentHost.getWidth());
                 float clamped = Math.max(-width, Math.min(width, dx));
+                float progress = Math.min(1f, Math.abs(clamped) / width);
                 currentPageView.setTranslationX(clamped);
-                currentPageView.setAlpha(1f - Math.min(0.28f, Math.abs(clamped) / width * 0.42f));
+                currentPageView.setAlpha(1f - Math.min(0.24f, progress * 0.32f));
+                currentPageView.setScaleX(1f - 0.018f * progress);
+                currentPageView.setScaleY(1f - 0.018f * progress);
+                if (previewPageView != null) {
+                    previewPageView.setAlpha(0.72f + 0.28f * progress);
+                    previewPageView.setScaleX(0.985f + 0.015f * progress);
+                    previewPageView.setScaleY(0.985f + 0.015f * progress);
+                }
                 return true;
             }
             return true;
@@ -1557,7 +1606,12 @@ public class MainActivity extends Activity {
         TextView view = text(label, 13, true, accentColor());
         view.setGravity(Gravity.CENTER);
         view.setBackground(rounded(isDarkMode() ? Color.rgb(38, 43, 49) : Color.WHITE, dp(10)));
-        view.setOnClickListener(listener);
+        view.setOnClickListener(v -> {
+            press(v);
+            if (listener != null) {
+                listener.onClick(v);
+            }
+        });
         return view;
     }
 
@@ -1579,6 +1633,44 @@ public class MainActivity extends Activity {
         lp.setMargins(0, 0, 0, dp(14));
         card.setLayoutParams(lp);
         return card;
+    }
+
+    private void animateCards(LinearLayout content) {
+        int animated = 0;
+        for (int i = 0; i < content.getChildCount(); i++) {
+            View child = content.getChildAt(i);
+            if (!(child instanceof LinearLayout)) {
+                continue;
+            }
+            child.setAlpha(0f);
+            child.setTranslationY(dp(10));
+            child.animate()
+                    .alpha(1f)
+                    .translationY(0)
+                    .setStartDelay(Math.min(120, animated * 22L))
+                    .setDuration(220)
+                    .setInterpolator(new DecelerateInterpolator(1.8f))
+                    .start();
+            animated++;
+            if (animated >= 8) {
+                break;
+            }
+        }
+    }
+
+    private void press(View view) {
+        view.animate().cancel();
+        view.animate()
+                .scaleX(0.96f)
+                .scaleY(0.96f)
+                .setDuration(70)
+                .withEndAction(() -> view.animate()
+                        .scaleX(1f)
+                        .scaleY(1f)
+                        .setDuration(130)
+                        .setInterpolator(new OvershootInterpolator(0.55f))
+                        .start())
+                .start();
     }
 
     private TextView text(String value, int sp, boolean bold, int color) {

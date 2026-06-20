@@ -1,13 +1,11 @@
 package com.codex.batterystats;
 
-import android.Manifest;
 import android.app.Activity;
 import android.app.AppOpsManager;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
@@ -22,22 +20,26 @@ import android.content.res.Configuration;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.Display;
+import android.view.ViewGroup;
 import android.view.Window;
-import android.view.animation.AccelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.annotation.NonNull;
+import androidx.recyclerview.widget.RecyclerView;
+import androidx.viewpager2.widget.ViewPager2;
+
+import com.google.android.material.button.MaterialButton;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
@@ -54,12 +56,10 @@ public class MainActivity extends Activity {
     private LinearLayout topBar;
     private LinearLayout tabsBar;
     private final TextView[] tabViews = new TextView[4];
-    private FrameLayout contentHost;
-    private View currentPageView;
-    private View previewPageView;
+    private ViewPager2 pager;
+    private BatteryPagerAdapter pagerAdapter;
     private ScrollView currentScroll;
     private int page = 0;
-    private int renderedPage = -1;
     private int processSortMode = 0;
     private boolean processSortAscending;
     private boolean processAppOnly = false;
@@ -89,14 +89,8 @@ public class MainActivity extends Activity {
     private Handler processDialogHandler;
     private Runnable processDialogUpdater;
     private final Map<Integer, long[]> coreLast = new HashMap<>();
-    private float swipeDownX;
-    private float swipeDownY;
-    private boolean swipeHorizontal;
-    private boolean swipeVertical;
-    private boolean pageSwitching;
-    private int previewTargetPage = -1;
-    private int lastPageForAnimation = -1;
     private long lastLocalBatterySampleAt;
+    private boolean moduleOkCached;
 
     private final Runnable refresher = new Runnable() {
         @Override
@@ -188,12 +182,9 @@ public class MainActivity extends Activity {
     }
 
     private void render() {
-        final boolean samePage = renderedPage == page;
-        final int restoreY = samePage && currentScroll != null ? currentScroll.getScrollY() : 0;
-        boolean moduleOk = ModuleDataImporter.importRecent(database);
+        moduleOkCached = ModuleDataImporter.importRecent(database);
         insertLocalBatterySampleIfNeeded();
         configureSystemBars();
-        View oldPageView = currentPageView;
         if (root == null) {
             root = new LinearLayout(this);
             root.setOrientation(LinearLayout.VERTICAL);
@@ -201,56 +192,58 @@ public class MainActivity extends Activity {
             setContentView(root);
             addTopBar();
             addTabs();
-            contentHost = new SwipeFrameLayout(this);
-            root.addView(contentHost, new LinearLayout.LayoutParams(-1, 0, 1));
+            pager = new ViewPager2(this);
+            pager.setOrientation(ViewPager2.ORIENTATION_HORIZONTAL);
+            pager.setOffscreenPageLimit(1);
+            pagerAdapter = new BatteryPagerAdapter();
+            pager.setAdapter(pagerAdapter);
+            pager.setCurrentItem(page, false);
+            pager.registerOnPageChangeCallback(new ViewPager2.OnPageChangeCallback() {
+                @Override
+                public void onPageSelected(int position) {
+                    if (page == position) return;
+                    page = position;
+                    updateTabs();
+                    configureSystemBars();
+                    updateCurrentScrollFromPager();
+                    if (page == 3) {
+                        requestProcessLoad(false);
+                    }
+                }
+            });
+            root.addView(pager, new LinearLayout.LayoutParams(-1, 0, 1));
         } else {
             root.setBackgroundColor(pageBgColor());
             updateTopBar();
             updateTabs();
-            contentHost.animate().cancel();
-            contentHost.setTranslationX(0);
-            contentHost.setAlpha(1f);
-            if (!samePage) {
-                contentHost.removeAllViews();
-                oldPageView = null;
+            if (pagerAdapter != null) {
+                pagerAdapter.notifyDataSetChanged();
+            }
+            if (pager != null && pager.getCurrentItem() != page) {
+                pager.setCurrentItem(page, false);
             }
         }
+        updateCurrentScrollFromPager();
+    }
 
-        previewPageView = null;
-        previewTargetPage = -1;
-        View pageView = buildPageView(page, true, moduleOk, restoreY);
-        currentPageView = pageView;
-        contentHost.addView(pageView, new FrameLayout.LayoutParams(-1, -1));
-        renderedPage = page;
-        if (samePage && oldPageView != null && oldPageView != pageView) {
-            final View pageToRemove = oldPageView;
-            pageView.setAlpha(0f);
-            pageView.setTranslationY(dp(4));
-            pageToRemove.animate().cancel();
-            pageToRemove.animate()
-                    .alpha(0f)
-                    .setDuration(110)
-                    .setInterpolator(new DecelerateInterpolator(1.2f))
-                    .withEndAction(() -> contentHost.removeView(pageToRemove))
-                    .start();
-            pageView.animate()
-                    .alpha(1f)
-                    .translationY(0)
-                    .setDuration(150)
-                    .setInterpolator(new DecelerateInterpolator(1.6f))
-                    .start();
-        } else if (!samePage && currentPageView != null) {
-            float dir = lastPageForAnimation >= 0 && page > lastPageForAnimation ? 1f : -1f;
-            currentPageView.setTranslationX(dir * dp(42));
-            currentPageView.setAlpha(0.18f);
-            currentPageView.animate()
-                    .translationX(0)
-                    .alpha(1f)
-                    .setDuration(240)
-                    .setInterpolator(new DecelerateInterpolator(1.8f))
-                    .start();
-            lastPageForAnimation = page;
+    private void updateCurrentScrollFromPager() {
+        currentScroll = null;
+        if (pager == null) return;
+        pager.post(() -> currentScroll = findScrollView(pager));
+    }
+
+    private ScrollView findScrollView(View view) {
+        if (view instanceof ScrollView) {
+            return (ScrollView) view;
         }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                ScrollView found = findScrollView(group.getChildAt(i));
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     private View buildPageView(int targetPage, boolean assignCurrentScroll, boolean moduleOk, int restoreY) {
@@ -289,6 +282,38 @@ public class MainActivity extends Activity {
             animateCards(content);
         }
         return pageView;
+    }
+
+    private final class BatteryPagerAdapter extends RecyclerView.Adapter<PageHolder> {
+        @NonNull
+        @Override
+        public PageHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            View view = buildPageView(viewType, false, moduleOkCached, 0);
+            view.setLayoutParams(new RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+            return new PageHolder(view);
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull PageHolder holder, int position) {
+        }
+
+        @Override
+        public int getItemCount() {
+            return 4;
+        }
+
+        @Override
+        public int getItemViewType(int position) {
+            return position;
+        }
+    }
+
+    private static final class PageHolder extends RecyclerView.ViewHolder {
+        PageHolder(@NonNull View itemView) {
+            super(itemView);
+        }
     }
 
     private void addTopBar() {
@@ -346,7 +371,7 @@ public class MainActivity extends Activity {
     }
 
     private TextView tab(String label, int target) {
-        TextView view = text(tabLabel(target), 15, true, target == page ? Color.WHITE : primaryTextColor());
+        TextView view = BuildConfig.MATERIAL_UI ? materialAction(tabLabel(target), 15) : text(tabLabel(target), 15, true, target == page ? Color.WHITE : primaryTextColor());
         view.setGravity(Gravity.CENTER);
         view.setOnClickListener(v -> {
             press(v);
@@ -371,7 +396,13 @@ public class MainActivity extends Activity {
             tab.animate().cancel();
             tab.setText(tabLabel(i));
             tab.setTextColor(selected ? Color.WHITE : primaryTextColor());
-            tab.setBackground(rounded(selected ? accentColor() : (isDarkMode() ? Color.rgb(34, 39, 46) : Color.WHITE), dp(12)));
+            if (tab instanceof MaterialButton) {
+                MaterialButton button = (MaterialButton) tab;
+                button.setCornerRadius(dp(14));
+                button.setBackgroundColor(selected ? accentColor() : chipColor());
+            } else {
+                tab.setBackground(rounded(selected ? accentColor() : chipColor(), dp(12)));
+            }
             tab.setAlpha(selected ? 1f : 0.92f);
         }
     }
@@ -380,242 +411,12 @@ public class MainActivity extends Activity {
         if (page == target) {
             return;
         }
-        if (contentHost != null && currentPageView != null) {
-            float syntheticDx = target > page ? -Math.max(1, contentHost.getWidth()) * 0.45f : Math.max(1, contentHost.getWidth()) * 0.45f;
-            switchPageWithSwipe(target, syntheticDx);
+        if (pager != null) {
+            pager.setCurrentItem(target, true);
             return;
         }
         page = target;
         render();
-    }
-
-    private void switchPageWithSwipe(int target, float dx) {
-        if (pageSwitching || page == target || contentHost == null || currentPageView == null) {
-            return;
-        }
-        pageSwitching = true;
-        ensureSwipePreview(target, dx);
-        float width = Math.max(1, contentHost.getWidth());
-        float currentOut = dx < 0 ? -width : width;
-        currentPageView.animate().cancel();
-        currentPageView.animate()
-                .translationX(currentOut)
-                .alpha(0.35f)
-                .setDuration(230)
-                .setInterpolator(new AccelerateInterpolator(0.9f))
-                .start();
-        if (previewPageView != null) {
-            previewPageView.animate().cancel();
-            previewPageView.animate()
-                    .translationX(0)
-                    .alpha(1f)
-                    .setDuration(260)
-                    .setInterpolator(new DecelerateInterpolator(2.1f))
-                    .withEndAction(() -> {
-                        finishSwipeTo(target);
-                    })
-                    .start();
-        } else {
-            page = target;
-            pageSwitching = false;
-            render();
-        }
-    }
-
-    private void finishSwipeTo(int target) {
-        View old = currentPageView;
-        page = target;
-        renderedPage = target;
-        currentPageView = previewPageView;
-        previewPageView = null;
-        previewTargetPage = -1;
-        if (old != null && old != currentPageView) {
-            contentHost.removeView(old);
-        }
-        if (currentPageView != null) {
-            currentPageView.animate().cancel();
-            currentPageView.setTranslationX(0);
-            currentPageView.setAlpha(1f);
-            if (currentPageView instanceof ScrollView) {
-                currentScroll = (ScrollView) currentPageView;
-            } else {
-                currentScroll = null;
-            }
-        }
-        root.setBackgroundColor(pageBgColor());
-        updateTopBar();
-        updateTabs();
-        pageSwitching = false;
-        lastPageForAnimation = page;
-    }
-
-    private void settleSwipe() {
-        if (contentHost == null || currentPageView == null) {
-            return;
-        }
-        currentPageView.animate().cancel();
-        currentPageView.animate()
-                .translationX(0)
-                .alpha(1f)
-                .setDuration(190)
-                .setInterpolator(new DecelerateInterpolator(1.7f))
-                .start();
-        if (previewPageView != null) {
-            float width = Math.max(1, contentHost.getWidth());
-            float targetX = previewTargetPage > page ? width : -width;
-            previewPageView.animate().cancel();
-            previewPageView.animate()
-                    .translationX(targetX)
-                    .alpha(0.2f)
-                    .setDuration(170)
-                    .setInterpolator(new DecelerateInterpolator(1.5f))
-                    .withEndAction(() -> removeSwipePreview())
-                    .start();
-        }
-    }
-
-    private int swipeTargetForDelta(float dx) {
-        if (dx < 0 && page < 3) return page + 1;
-        if (dx > 0 && page > 0) return page - 1;
-        return -1;
-    }
-
-    private void ensureSwipePreview(int target, float dx) {
-        if (target < 0 || contentHost == null) {
-            removeSwipePreview();
-            return;
-        }
-        if (previewPageView == null || previewTargetPage != target) {
-            removeSwipePreview();
-            previewTargetPage = target;
-            previewPageView = buildPageView(target, false, ModuleDataImporter.importRecent(database), 0);
-            previewPageView.setAlpha(0.72f);
-            contentHost.addView(previewPageView, new FrameLayout.LayoutParams(-1, -1));
-        }
-        float width = Math.max(1, contentHost.getWidth());
-        previewPageView.setTranslationX(target > page ? width + dx : -width + dx);
-    }
-
-    private void removeSwipePreview() {
-        if (contentHost != null && previewPageView != null) {
-            contentHost.removeView(previewPageView);
-        }
-        previewPageView = null;
-        previewTargetPage = -1;
-    }
-
-    private boolean handleSwipeEvent(MotionEvent event) {
-        if (processDialog != null && processDialog.isShowing()) return false;
-        if (page == 3 && processSearchFocused) return false;
-        if (pageSwitching) return true;
-        if (event.getAction() == MotionEvent.ACTION_DOWN) {
-            swipeDownX = event.getRawX();
-            swipeDownY = event.getRawY();
-            swipeHorizontal = false;
-            swipeVertical = false;
-            if (currentPageView != null) {
-                currentPageView.animate().cancel();
-            }
-            return true;
-        }
-        if (event.getAction() == MotionEvent.ACTION_MOVE) {
-            float dx = event.getRawX() - swipeDownX;
-            float dy = event.getRawY() - swipeDownY;
-            if (!swipeHorizontal && Math.abs(dy) > dp(8) && Math.abs(dy) > Math.abs(dx) * 1.15f) {
-                swipeVertical = true;
-                return false;
-            }
-            if (!swipeVertical && !swipeHorizontal && Math.abs(dx) > dp(28) && Math.abs(dx) > Math.abs(dy) * 2.2f) {
-                swipeHorizontal = true;
-                if (currentScroll != null) {
-                    currentScroll.requestDisallowInterceptTouchEvent(true);
-                }
-                if (contentHost != null) {
-                    contentHost.requestDisallowInterceptTouchEvent(true);
-                }
-            }
-            if (swipeHorizontal && contentHost != null && currentPageView != null) {
-                int target = swipeTargetForDelta(dx);
-                if (target < 0) {
-                    settleSwipe();
-                    return true;
-                }
-                ensureSwipePreview(target, dx);
-                float width = Math.max(1, contentHost.getWidth());
-                float clamped = Math.max(-width, Math.min(width, dx));
-                float progress = Math.min(1f, Math.abs(clamped) / width);
-                currentPageView.setTranslationX(clamped);
-                currentPageView.setAlpha(1f - Math.min(0.24f, progress * 0.32f));
-                if (previewPageView != null) {
-                    previewPageView.setAlpha(0.72f + 0.28f * progress);
-                }
-                return true;
-            }
-            return true;
-        }
-        if (event.getAction() == MotionEvent.ACTION_UP) {
-            float dx = event.getRawX() - swipeDownX;
-            float dy = event.getRawY() - swipeDownY;
-            if (!swipeVertical && Math.abs(dx) > dp(96) && Math.abs(dx) > Math.abs(dy) * 2.2f) {
-                int target = swipeTargetForDelta(dx);
-                if (target >= 0) {
-                    switchPageWithSwipe(target, dx);
-                } else {
-                    settleSwipe();
-                }
-                swipeHorizontal = false;
-                return true;
-            }
-            settleSwipe();
-            swipeHorizontal = false;
-            swipeVertical = false;
-            return true;
-        }
-        if (event.getAction() == MotionEvent.ACTION_CANCEL) {
-            settleSwipe();
-            swipeHorizontal = false;
-            swipeVertical = false;
-            return true;
-        }
-        return false;
-    }
-
-    private class SwipeFrameLayout extends FrameLayout {
-        SwipeFrameLayout(Context context) {
-            super(context);
-        }
-
-        @Override
-        public boolean onInterceptTouchEvent(MotionEvent event) {
-            if (processDialog != null && processDialog.isShowing()) return false;
-            if (page == 3 && processSearchFocused) return false;
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                swipeDownX = event.getRawX();
-                swipeDownY = event.getRawY();
-                swipeHorizontal = false;
-                swipeVertical = false;
-                return false;
-            }
-            if (event.getAction() == MotionEvent.ACTION_MOVE) {
-                float dx = event.getRawX() - swipeDownX;
-                float dy = event.getRawY() - swipeDownY;
-                if (Math.abs(dy) > dp(8) && Math.abs(dy) > Math.abs(dx) * 1.15f) {
-                    swipeVertical = true;
-                    return false;
-                }
-                if (!swipeVertical && Math.abs(dx) > dp(28) && Math.abs(dx) > Math.abs(dy) * 2.2f) {
-                    swipeHorizontal = true;
-                    requestDisallowInterceptTouchEvent(true);
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        @Override
-        public boolean onTouchEvent(MotionEvent event) {
-            return handleSwipeEvent(event);
-        }
     }
 
     private void addOverview(LinearLayout content, boolean moduleOk) {
@@ -1735,9 +1536,15 @@ public class MainActivity extends Activity {
     }
 
     private TextView smallAction(String label, View.OnClickListener listener) {
-        TextView view = text(label, 13, true, accentColor());
+        TextView view = BuildConfig.MATERIAL_UI ? materialAction(label, 13) : text(label, 13, true, accentColor());
         view.setGravity(Gravity.CENTER);
-        view.setBackground(rounded(isDarkMode() ? Color.rgb(38, 43, 49) : Color.WHITE, dp(10)));
+        if (view instanceof MaterialButton) {
+            MaterialButton button = (MaterialButton) view;
+            button.setCornerRadius(dp(12));
+            button.setBackgroundColor(chipColor());
+        } else {
+            view.setBackground(rounded(chipColor(), dp(10)));
+        }
         view.setOnClickListener(v -> {
             press(v);
             if (listener != null) {
@@ -1745,6 +1552,22 @@ public class MainActivity extends Activity {
             }
         });
         return view;
+    }
+
+    private TextView materialAction(String label, int sp) {
+        MaterialButton button = new MaterialButton(this);
+        button.setText(label);
+        button.setTextSize(sp);
+        button.setTextColor(accentColor());
+        button.setTypeface(Typeface.DEFAULT_BOLD);
+        button.setAllCaps(false);
+        button.setMinHeight(0);
+        button.setMinWidth(0);
+        button.setInsetTop(0);
+        button.setInsetBottom(0);
+        button.setPadding(dp(8), 0, dp(8), 0);
+        button.setStrokeWidth(0);
+        return button;
     }
 
     private LinearLayout metric(String value, String label) {
@@ -1759,10 +1582,10 @@ public class MainActivity extends Activity {
     private LinearLayout card() {
         LinearLayout card = new LinearLayout(this);
         card.setPadding(dp(18), dp(14), dp(18), dp(14));
-        card.setBackground(rounded(cardColor(), dp(14)));
-        card.setElevation(dp(1));
+        card.setBackground(rounded(cardColor(), dp(BuildConfig.MATERIAL_UI ? 18 : 14)));
+        card.setElevation(dp(BuildConfig.MATERIAL_UI ? 2 : 1));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.setMargins(0, 0, 0, dp(14));
+        lp.setMargins(0, 0, 0, dp(BuildConfig.MATERIAL_UI ? 12 : 14));
         card.setLayoutParams(lp);
         return card;
     }
@@ -1984,23 +1807,45 @@ public class MainActivity extends Activity {
     }
 
     private int pageBgColor() {
+        if (BuildConfig.MATERIAL_UI) {
+            return isDarkMode() ? Color.rgb(15, 18, 22) : Color.rgb(246, 248, 252);
+        }
         return isDarkMode() ? Color.rgb(20, 23, 27) : Color.rgb(241, 242, 244);
     }
 
     private int cardColor() {
+        if (BuildConfig.MATERIAL_UI) {
+            return isDarkMode() ? Color.rgb(29, 33, 39) : Color.rgb(255, 251, 254);
+        }
         return isDarkMode() ? Color.rgb(30, 35, 41) : Color.WHITE;
     }
 
     private int primaryTextColor() {
+        if (BuildConfig.MATERIAL_UI) {
+            return isDarkMode() ? Color.rgb(232, 234, 238) : Color.rgb(30, 34, 40);
+        }
         return isDarkMode() ? Color.rgb(226, 231, 236) : Color.rgb(52, 55, 58);
     }
 
     private int secondaryTextColor() {
+        if (BuildConfig.MATERIAL_UI) {
+            return isDarkMode() ? Color.rgb(166, 173, 184) : Color.rgb(99, 107, 118);
+        }
         return isDarkMode() ? Color.rgb(155, 164, 174) : Color.rgb(120, 123, 128);
     }
 
     private int accentColor() {
+        if (BuildConfig.MATERIAL_UI) {
+            return isDarkMode() ? Color.rgb(126, 192, 255) : Color.rgb(0, 104, 184);
+        }
         return isDarkMode() ? Color.rgb(105, 178, 245) : Color.rgb(22, 137, 216);
+    }
+
+    private int chipColor() {
+        if (BuildConfig.MATERIAL_UI) {
+            return isDarkMode() ? Color.rgb(37, 43, 51) : Color.rgb(232, 240, 249);
+        }
+        return isDarkMode() ? Color.rgb(38, 43, 49) : Color.WHITE;
     }
 
     private int adaptTextColor(int color) {

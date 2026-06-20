@@ -26,9 +26,9 @@ if ($env:JAVA_HOME) {
 }
 
 if (Test-Path ".\gradlew.bat") {
-    .\gradlew.bat assembleRelease
+    .\gradlew.bat assembleClassicRelease assembleMaterialRelease
 } elseif (Get-Command gradle -ErrorAction SilentlyContinue) {
-    gradle assembleRelease
+    gradle assembleClassicRelease assembleMaterialRelease
 } else {
     Write-Host "Gradle not found." -ForegroundColor Yellow
     exit 1
@@ -37,15 +37,24 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$apk = Join-Path $root "app\build\outputs\apk\release\app-release.apk"
 $dist = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 $version = Select-String -Path (Join-Path $root "app\build.gradle") -Pattern 'versionName\s+"([^"]+)"' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 1
 if (-not $version) { $version = "dev" }
-$finalApk = Join-Path $dist "battery-stats-v$version-release-signed.apk"
-if (Test-Path $apk) {
-    Copy-Item -LiteralPath $apk -Destination $finalApk -Force
-    Write-Host "APK generated: $finalApk" -ForegroundColor Green
-} else {
-    Write-Host "Build finished, but APK output was not found." -ForegroundColor Yellow
+$outputs = @(
+    @{ Flavor = "classic"; Source = "app\build\outputs\apk\classic\release\app-classic-release.apk"; Name = "battery-stats-v$version-classic-release-signed.apk" },
+    @{ Flavor = "material"; Source = "app\build\outputs\apk\material\release\app-material-release.apk"; Name = "battery-stats-v$version-material-release-signed.apk" }
+)
+$generated = $false
+foreach ($item in $outputs) {
+    $apk = Join-Path $root $item.Source
+    $finalApk = Join-Path $dist $item.Name
+    if (Test-Path $apk) {
+        Copy-Item -LiteralPath $apk -Destination $finalApk -Force
+        Write-Host "APK generated: $finalApk" -ForegroundColor Green
+        $generated = $true
+    }
+}
+if (-not $generated) {
+    Write-Host "Build finished, but APK outputs were not found." -ForegroundColor Yellow
 }

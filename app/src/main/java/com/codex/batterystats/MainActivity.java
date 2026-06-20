@@ -1780,7 +1780,7 @@ public class MainActivity extends Activity {
             return 0;
         }
         double power = Math.abs(sample.powerW);
-        double cap = sample.isCharging() ? 80.0 : 25.0;
+        double cap = sample.isCharging() ? 240.0 : 35.0;
         return Math.max(0, Math.min(cap, power));
     }
 

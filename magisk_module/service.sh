@@ -32,7 +32,13 @@ norm_voltage() {
 }
 
 norm_current() {
-  awk -v v="$1" 'BEGIN { a=v; if (a < 0) a=-a; if (a > 100000) printf "%.6f", v/1000000; else if (a > 10000) printf "%.6f", v/1000000; else if (a > 100) printf "%.6f", v/1000; else printf "%.6f", v; }'
+  awk -v v="$1" 'BEGIN {
+    sign=(v<0?-1:1); a=v; if (a<0) a=-a;
+    c[1]=a/1000000; c[2]=a/1000000000; c[3]=a/1000; c[4]=a;
+    for (i=1;i<=4;i++) if (c[i]>=0.02 && c[i]<=20) { printf "%.6f", sign*c[i]; exit }
+    for (i=1;i<=4;i++) if (c[i]>0 && c[i]<=40) { printf "%.6f", sign*c[i]; exit }
+    printf "0.000000";
+  }'
 }
 
 status_code() {
@@ -254,7 +260,7 @@ while true; do
   current="$(norm_current "$raw_current")"
   voltage="$(norm_voltage "$raw_voltage")"
   temp="$(awk -v t="$raw_temp" 'BEGIN { if (t > 1000 || t < -1000) printf "%.1f", t/1000; else printf "%.1f", t/10; }')"
-  power="$(awk -v c="$current" -v v="$voltage" 'BEGIN { if (c < 0) c=-c; printf "%.6f", c*v; }')"
+  power="$(awk -v c="$current" -v v="$voltage" -v s="$status" 'BEGIN { if (c < 0) c=-c; p=c*v; max=(s==2 || s==5) ? 240 : 35; if (p > max) p=max; if (p < 0) p=0; printf "%.6f", p; }')"
 
   if [ $((now_s - cached_pkg_at)) -ge 60 ] || [ -z "$cached_pkg" ]; then
     cached_pkg="$(foreground_pkg)"

@@ -66,7 +66,7 @@ final class StatsDatabase extends SQLiteOpenHelper {
         values.put("status", sample.status);
         values.put("current_a", sample.currentA);
         values.put("voltage_v", sample.voltageV);
-        values.put("power_w", sample.powerW);
+        values.put("power_w", BatteryReader.clampPower(sample.powerW, sample.isCharging()));
         values.put("temp_c", sample.tempC);
         values.put("screen_on", sample.screenOn ? 1 : 0);
         values.put("pkg", sample.foregroundPackage);
@@ -206,7 +206,7 @@ final class StatsDatabase extends SQLiteOpenHelper {
                 sample.status = c.getInt(c.getColumnIndexOrThrow("status"));
                 sample.currentA = c.getDouble(c.getColumnIndexOrThrow("current_a"));
                 sample.voltageV = c.getDouble(c.getColumnIndexOrThrow("voltage_v"));
-                sample.powerW = c.getDouble(c.getColumnIndexOrThrow("power_w"));
+                sample.powerW = BatteryReader.clampPower(c.getDouble(c.getColumnIndexOrThrow("power_w")), sample.isCharging());
                 sample.tempC = c.getDouble(c.getColumnIndexOrThrow("temp_c"));
                 int screenIndex = c.getColumnIndex("screen_on");
                 sample.screenOn = screenIndex >= 0 && c.getInt(screenIndex) != 0;

@@ -64,7 +64,7 @@ final class BatteryReader {
         if (!sample.isCharging() && sample.currentA > 0) {
             sample.currentA = -sample.currentA;
         }
-        sample.powerW = sample.voltageV * Math.abs(sample.currentA);
+        sample.powerW = clampPower(sample.voltageV * Math.abs(sample.currentA), sample.isCharging());
         sample.screenOn = isScreenOn();
         sample.foregroundPackage = foregroundPackage();
         return sample;
@@ -137,16 +137,32 @@ final class BatteryReader {
 
     private static double normalizeCurrent(double raw) {
         double abs = Math.abs(raw);
-        if (abs > 100000) {
-            return raw / 1000000.0;
+        double sign = raw < 0 ? -1.0 : 1.0;
+        double[] candidates = new double[]{
+                abs / 1000000.0,
+                abs / 1000000000.0,
+                abs / 1000.0,
+                abs
+        };
+        for (double candidate : candidates) {
+            if (candidate >= 0.02 && candidate <= 20.0) {
+                return sign * candidate;
+            }
         }
-        if (abs > 10000) {
-            return raw / 1000000.0;
+        for (double candidate : candidates) {
+            if (candidate > 0 && candidate <= 40.0) {
+                return sign * candidate;
+            }
         }
-        if (abs > 100) {
-            return raw / 1000.0;
+        return 0;
+    }
+
+    static double clampPower(double powerW, boolean charging) {
+        if (Double.isNaN(powerW) || Double.isInfinite(powerW)) {
+            return 0;
         }
-        return raw;
+        double max = charging ? 240.0 : 35.0;
+        return Math.max(0, Math.min(max, Math.abs(powerW)));
     }
 
     private static double readFirstPositive(String... paths) {

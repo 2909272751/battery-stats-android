@@ -40,7 +40,7 @@ final class ModuleDataImporter {
                 }
                 sample.currentA = Double.parseDouble(p[3].trim());
                 sample.voltageV = Double.parseDouble(p[4].trim());
-                sample.powerW = Double.parseDouble(p[5].trim());
+                sample.powerW = BatteryReader.clampPower(Double.parseDouble(p[5].trim()), sample.isCharging());
                 sample.tempC = Double.parseDouble(p[6].trim());
                 if (p.length >= 9) {
                     sample.screenOn = "1".equals(p[7].trim());

@@ -1,10 +1,7 @@
 package com.codex.batterystats;
 
-import android.content.Context;
-
 import java.io.BufferedReader;
 import java.io.DataOutputStream;
-import java.io.File;
 import java.io.InputStreamReader;
 
 final class RootShell {
@@ -45,24 +42,6 @@ final class RootShell {
 
     static boolean isAvailable() {
         return "root".equals(run("id -un", 1200).trim());
-    }
-
-    static boolean installWatchdog(Context context) {
-        String pkg = context.getPackageName();
-        String script = "/data/local/tmp/battery_stats_watchdog.sh";
-        String cmd = "cat > " + script + " <<'EOF'\n"
-                + "#!/system/bin/sh\n"
-                + "PKG=\"" + pkg + "\"\n"
-                + "while true; do\n"
-                + "  if ! pidof $PKG >/dev/null 2>&1; then\n"
-                + "    am startservice -n $PKG/.BatteryMonitorService >/dev/null 2>&1\n"
-                + "  fi\n"
-                + "  sleep 60\n"
-                + "done\n"
-                + "EOF\n"
-                + "chmod 755 " + script + "\n"
-                + "nohup sh " + script + " >/dev/null 2>&1 &";
-        return !run(cmd, 2500).isEmpty() || new File("/system/bin/su").exists() || new File("/system/xbin/su").exists();
     }
 
     static boolean isStatsDaemonRunning() {

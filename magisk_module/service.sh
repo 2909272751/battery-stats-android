@@ -115,10 +115,33 @@ process_monitor() {
     fi
     req="$(cat "$PROC_REQ" 2>/dev/null)"
     watch_pid="${req%%|*}"
-    watch_pkg="${req#*|}"
+    watch_rest="${req#*|}"
+    watch_pkg="${watch_rest%%|*}"
+    watch_name="${watch_rest#*|}"
+    [ "$watch_name" = "$watch_rest" ] && watch_name=""
     case "$watch_pid" in ''|*[!0-9]*) watch_pid=0 ;; esac
-    if [ ! -d "/proc/$watch_pid" ] && [ -n "$watch_pkg" ]; then
-      np="$(pidof "$watch_pkg" 2>/dev/null | awk '{print $1}')"
+    if [ ! -d "/proc/$watch_pid" ]; then
+      np=""
+      if [ -n "$watch_pkg" ]; then
+        np="$(pidof "$watch_pkg" 2>/dev/null | awk '{print $1; exit}')"
+      fi
+      if [ -z "$np" ] && [ -n "$watch_name" ]; then
+        np="$(pidof "$watch_name" 2>/dev/null | awk '{print $1; exit}')"
+      fi
+      if [ -z "$np" ]; then
+        for x in /proc/[0-9]*; do
+          [ -r "$x/cmdline" ] || continue
+          cmd="$(tr '\0' ' ' < "$x/cmdline" 2>/dev/null | awk '{print $1}')"
+          [ -z "$cmd" ] && cmd="$(cat "$x/comm" 2>/dev/null)"
+          if [ -n "$watch_pkg" ]; then
+            case "$cmd" in "$watch_pkg"|"$watch_pkg":*) np="${x##*/}"; break ;; esac
+          fi
+          if [ -n "$watch_name" ] && [ "$cmd" = "$watch_name" ]; then
+            np="${x##*/}"
+            break
+          fi
+        done
+      fi
       [ -n "$np" ] && watch_pid="$np"
     fi
     if [ ! -d "/proc/$watch_pid" ]; then

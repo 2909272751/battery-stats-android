@@ -4,6 +4,7 @@ import android.os.BatteryManager;
 
 final class ModuleDataImporter {
     private static long lastImportAt;
+    private static long lastReadableProbeAt;
     private static boolean lastOk;
 
     private ModuleDataImporter() {
@@ -17,8 +18,8 @@ final class ModuleDataImporter {
         lastImportAt = now;
         String csv = RootShell.run("tail -n 2500 /data/adb/battery_stats/samples.csv 2>/dev/null", 2000);
         if (csv.length() == 0 || !csv.contains(",")) {
-            lastOk = false;
-            return false;
+            lastOk = hasReadableData();
+            return lastOk;
         }
         int imported = 0;
         String[] lines = csv.split("\\n");
@@ -55,7 +56,27 @@ final class ModuleDataImporter {
             }
         }
         imported += importAppUsage(database);
-        lastOk = imported > 0;
+        // Reaching this point means the module data file is readable.
+        // There may be no new rows to import because the latest samples
+        // were already stored locally, so do not treat imported == 0 as
+        // a module failure.
+        lastOk = true;
+        lastReadableProbeAt = now;
+        return lastOk;
+    }
+
+    static boolean hasReadableData() {
+        long now = System.currentTimeMillis();
+        if (now - lastReadableProbeAt < 5000) {
+            return lastOk;
+        }
+        lastReadableProbeAt = now;
+        String out = RootShell.run(
+                "if [ -r /data/adb/battery_stats/samples.csv ]; then echo samples; "
+                        + "elif [ -r /data/adb/battery_stats/app_usage.csv ]; then echo usage; "
+                        + "fi",
+                900);
+        lastOk = out.contains("samples") || out.contains("usage");
         return lastOk;
     }
 

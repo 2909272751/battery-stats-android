@@ -23,7 +23,7 @@ import java.util.Locale;
 import java.util.Map;
 
 public class FloatingProcessService extends Service {
-    private static final int SAMPLE_INTERVAL_MS = 1000;
+    private static final int SAMPLE_INTERVAL_MS = 500;
 
     private WindowManager windowManager;
     private WindowManager.LayoutParams params;
@@ -39,6 +39,7 @@ public class FloatingProcessService extends Service {
     private boolean large = true;
     private boolean sampling;
     private boolean framePosted;
+    private int missingSamples;
     private float downX;
     private float downY;
     private int startX;
@@ -198,11 +199,13 @@ public class FloatingProcessService extends Service {
     private void applySample(ProcessSnapshot info) {
         if (root == null) return;
         if (info == null) {
-            statusValue.setText("Process ended");
+            missingSamples++;
+            statusValue.setText(missingSamples < 3 ? "Reconnecting..." : "Process ended");
             summaryValue.setText("CPU% Top" + (large ? "15" : "8"));
             for (ThreadRow row : threadRows) row.set("", "", "", "");
             return;
         }
+        missingSamples = 0;
         statusValue.setText("");
         summaryValue.setText(String.format(Locale.CHINA, "CPU%% Top%d   %.1f%%   RES %s", large ? 15 : 8, info.cpuPercent, resText(info.rssKb)));
         int count = Math.min(threadRows.size(), info.threads.size());
@@ -249,13 +252,34 @@ public class FloatingProcessService extends Service {
     }
 
     private ProcessSnapshot sampleProcess() {
+        ProcessSnapshot local = sampleProcessFromProc();
+        if (local != null) {
+            if (local.cpuPercent <= 0.01 || local.threads.isEmpty()) {
+                ProcessSnapshot cached = sampleProcessFromDaemon();
+                if (cached != null) {
+                    mergeProcessSnapshots(local, cached);
+                }
+            }
+            return local;
+        }
         ProcessSnapshot cached = sampleProcessFromDaemon();
-        if (cached != null) return cached;
+        if (cached != null && cached.cpuPercent <= 0.01) {
+            ProcessSnapshot retry = sampleProcessFromProc();
+            if (retry != null) {
+                mergeProcessSnapshots(retry, cached);
+                return retry;
+            }
+        }
+        return cached;
+    }
+
+    private ProcessSnapshot sampleProcessFromProc() {
         String out = readProcessSample();
         if (out.length() == 0 || !out.contains("|")) return null;
         try {
             ProcessSnapshot info = new ProcessSnapshot();
             info.pid = pid;
+            int startPid = pid;
             long totalTicks = 0;
             long processTicks = 0;
             double psCpuPercent = -1;
@@ -275,6 +299,11 @@ public class FloatingProcessService extends Service {
                 } else if ("PID".equals(p[0]) && p.length >= 2) {
                     int newPid = parseIntSafe(p[1].trim(), pid);
                     if (newPid > 0) {
+                        if (newPid != pid) {
+                            lastProcessTicks = 0;
+                            lastThreadTicks.clear();
+                            threadCpuMasks.clear();
+                        }
                         pid = newPid;
                         info.pid = newPid;
                     }
@@ -318,6 +347,9 @@ public class FloatingProcessService extends Service {
                 }
             }
             if (totalTicks <= 0) return null;
+            if (info.pid != startPid) {
+                lastTotalTicks = 0;
+            }
             if (coreCount <= 0) coreCount = lastCoreCount > 0 ? lastCoreCount : Math.max(1, Runtime.getRuntime().availableProcessors());
             long totalDelta = lastTotalTicks > 0 ? Math.max(1, totalTicks - lastTotalTicks) : 0;
             double processTotalPercent = 0;
@@ -367,6 +399,45 @@ public class FloatingProcessService extends Service {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private void mergeProcessSnapshots(ProcessSnapshot target, ProcessSnapshot extra) {
+        if (target.rssKb <= 0 && extra.rssKb > 0) {
+            target.rssKb = extra.rssKb;
+        }
+        if (target.cpuPercent <= 0.01 && extra.cpuPercent > 0.01) {
+            target.cpuPercent = extra.cpuPercent;
+        }
+        if (target.threads.isEmpty()) {
+            target.threads.addAll(extra.threads);
+            target.threads.sort((a, b) -> Double.compare(b.percent, a.percent));
+            return;
+        }
+        Map<Integer, ThreadSample> byTid = new HashMap<>();
+        for (ThreadSample th : target.threads) {
+            byTid.put(th.tid, th);
+        }
+        for (ThreadSample th : extra.threads) {
+            ThreadSample current = byTid.get(th.tid);
+            if (current == null) {
+                target.threads.add(th);
+                continue;
+            }
+            if (current.percent <= 0.01 && th.percent > 0.01) {
+                current.percent = th.percent;
+            }
+            if (current.core < 0 && th.core >= 0) {
+                current.core = th.core;
+            }
+            if ((current.cpus == null || current.cpus.length() == 0 || "-".equals(current.cpus))
+                    && th.cpus != null && th.cpus.length() > 0) {
+                current.cpus = th.cpus;
+            }
+            if ((current.comm == null || current.comm.length() == 0) && th.comm != null) {
+                current.comm = th.comm;
+            }
+        }
+        target.threads.sort((a, b) -> Double.compare(b.percent, a.percent));
     }
 
     private ProcessSnapshot sampleProcessFromDaemon() {
@@ -431,9 +502,21 @@ public class FloatingProcessService extends Service {
 
     private String readProcessSample() {
         String pkg = packageName == null ? "" : packageName.replace("'", "");
-        String script = "pid=" + pid + "; d=/proc/$pid; "
-                + "if [ ! -d \"$d\" ] && [ -n '" + pkg + "' ]; then "
-                + "np=$(pidof '" + pkg + "' 2>/dev/null | awk '{print $1}'); "
+        String procName = name == null ? "" : name.replace("'", "");
+        String script = "pid=" + pid + "; pkg='" + pkg + "'; pname='" + procName + "'; d=/proc/$pid; "
+                + "find_pid() { "
+                + "if [ -n \"$pkg\" ]; then p=$(pidof \"$pkg\" 2>/dev/null | awk '{print $1; exit}'); [ -n \"$p\" ] && { echo \"$p\"; return; }; fi; "
+                + "if [ -n \"$pname\" ]; then p=$(pidof \"$pname\" 2>/dev/null | awk '{print $1; exit}'); [ -n \"$p\" ] && { echo \"$p\"; return; }; fi; "
+                + "for x in /proc/[0-9]*; do "
+                + "[ -r \"$x/cmdline\" ] || continue; "
+                + "cmd=$(cat \"$x/cmdline\" 2>/dev/null | tr '\\000' ' ' | awk '{print $1}'); "
+                + "[ -z \"$cmd\" ] && cmd=$(cat \"$x/comm\" 2>/dev/null); "
+                + "if [ -n \"$pkg\" ]; then case \"$cmd\" in \"$pkg\"|\"$pkg\":*) echo ${x##*/}; return;; esac; fi; "
+                + "if [ -n \"$pname\" ] && [ \"$cmd\" = \"$pname\" ]; then echo ${x##*/}; return; fi; "
+                + "done; "
+                + "}; "
+                + "if [ ! -d \"$d\" ]; then "
+                + "np=$(find_pid); "
                 + "[ -n \"$np\" ] && pid=$np && d=/proc/$pid && echo \"PID|$pid\"; "
                 + "fi; "
                 + "[ -d \"$d\" ] || exit; "
@@ -582,7 +665,8 @@ public class FloatingProcessService extends Service {
 
     private void writeWatchRequest() {
         String pkg = packageName == null ? "" : packageName.replace("'", "");
-        RootShell.run("mkdir -p /data/adb/battery_stats; echo '" + pid + "|" + pkg + "' > /data/adb/battery_stats/process_watch; chmod 0644 /data/adb/battery_stats/process_watch", 500);
+        String procName = name == null ? "" : name.replace("'", "");
+        RootShell.run("mkdir -p /data/adb/battery_stats; echo '" + pid + "|" + pkg + "|" + procName + "' > /data/adb/battery_stats/process_watch; chmod 0644 /data/adb/battery_stats/process_watch", 500);
     }
 
     private String trim(String value, int max) {

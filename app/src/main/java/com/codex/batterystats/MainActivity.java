@@ -68,6 +68,7 @@ public class MainActivity extends Activity {
     private long lastProcessLoadAt;
     private List<ProcessInfo> processCache = new ArrayList<>();
     private LinearLayout processListParent;
+    private LinearLayout processListCard;
     private int processListStartIndex;
     private int dischargeSortMode = 0;
     private boolean dischargeShowSystemApps;
@@ -92,8 +93,10 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             boolean processAtTop = currentScroll == null || currentScroll.getScrollY() < dp(12);
-            if (page == 0 || (page == 3 && processAutoRefresh && !processSearchFocused && processAtTop)) {
+            if (page == 0) {
                 render();
+            } else if (page == 3 && processAutoRefresh && !processSearchFocused) {
+                requestProcessLoad(false);
             }
             handler.postDelayed(this, page == 3 && processAutoRefresh && !processSearchFocused && processAtTop ? 1000 : 5000);
         }
@@ -433,8 +436,6 @@ public class MainActivity extends Activity {
             currentPageView.animate().cancel();
             currentPageView.setTranslationX(0);
             currentPageView.setAlpha(1f);
-            currentPageView.setScaleX(1f);
-            currentPageView.setScaleY(1f);
             if (currentPageView instanceof ScrollView) {
                 currentScroll = (ScrollView) currentPageView;
             } else {
@@ -455,10 +456,8 @@ public class MainActivity extends Activity {
         currentPageView.animate()
                 .translationX(0)
                 .alpha(1f)
-                .scaleX(1f)
-                .scaleY(1f)
                 .setDuration(190)
-                .setInterpolator(new OvershootInterpolator(0.45f))
+                .setInterpolator(new DecelerateInterpolator(1.7f))
                 .start();
         if (previewPageView != null) {
             float width = Math.max(1, contentHost.getWidth());
@@ -467,8 +466,6 @@ public class MainActivity extends Activity {
             previewPageView.animate()
                     .translationX(targetX)
                     .alpha(0.2f)
-                    .scaleX(0.985f)
-                    .scaleY(0.985f)
                     .setDuration(170)
                     .setInterpolator(new DecelerateInterpolator(1.5f))
                     .withEndAction(() -> removeSwipePreview())
@@ -492,8 +489,6 @@ public class MainActivity extends Activity {
             previewTargetPage = target;
             previewPageView = buildPageView(target, false, ModuleDataImporter.importRecent(database), 0);
             previewPageView.setAlpha(0.72f);
-            previewPageView.setScaleX(0.985f);
-            previewPageView.setScaleY(0.985f);
             contentHost.addView(previewPageView, new FrameLayout.LayoutParams(-1, -1));
         }
         float width = Math.max(1, contentHost.getWidth());
@@ -543,12 +538,8 @@ public class MainActivity extends Activity {
                 float progress = Math.min(1f, Math.abs(clamped) / width);
                 currentPageView.setTranslationX(clamped);
                 currentPageView.setAlpha(1f - Math.min(0.24f, progress * 0.32f));
-                currentPageView.setScaleX(1f - 0.018f * progress);
-                currentPageView.setScaleY(1f - 0.018f * progress);
                 if (previewPageView != null) {
                     previewPageView.setAlpha(0.72f + 0.28f * progress);
-                    previewPageView.setScaleX(0.985f + 0.015f * progress);
-                    previewPageView.setScaleY(0.985f + 0.015f * progress);
                 }
                 return true;
             }
@@ -1045,6 +1036,7 @@ public class MainActivity extends Activity {
 
         processListParent = content;
         processListStartIndex = content.getChildCount();
+        processListCard = null;
         appendProcessListViews(content);
     }
 
@@ -1052,17 +1044,29 @@ public class MainActivity extends Activity {
         if (processLoading && processCache.isEmpty()) {
             addLoadingCard(content, "正在读取进程信息...");
         }
-        addProcessList(content, filteredProcessList());
+        processListCard = createProcessListCard(filteredProcessList());
+        content.addView(processListCard);
     }
 
     private void refreshProcessListOnly() {
         if (processListParent == null || page != 3) {
             return;
         }
+        final int y = currentScroll == null ? 0 : currentScroll.getScrollY();
+        if (processListCard != null) {
+            populateProcessListCard(processListCard, filteredProcessList());
+            if (currentScroll != null) {
+                currentScroll.post(() -> currentScroll.scrollTo(0, y));
+            }
+            return;
+        }
         while (processListParent.getChildCount() > processListStartIndex) {
             processListParent.removeViewAt(processListStartIndex);
         }
         appendProcessListViews(processListParent);
+        if (currentScroll != null) {
+            currentScroll.post(() -> currentScroll.scrollTo(0, y));
+        }
     }
 
     private void requestProcessLoad(boolean force) {
@@ -1102,8 +1106,14 @@ public class MainActivity extends Activity {
         content.addView(card);
     }
 
-    private void addProcessList(LinearLayout content, List<ProcessInfo> list) {
+    private LinearLayout createProcessListCard(List<ProcessInfo> list) {
         LinearLayout card = card();
+        populateProcessListCard(card, list);
+        return card;
+    }
+
+    private void populateProcessListCard(LinearLayout card, List<ProcessInfo> list) {
+        card.removeAllViews();
         card.setOrientation(LinearLayout.VERTICAL);
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
@@ -1113,7 +1123,7 @@ public class MainActivity extends Activity {
         header.addView(sortHeader("CPU", 0), new LinearLayout.LayoutParams(0, dp(28), 1));
         card.addView(header);
 
-        int count = Math.min(30, list.size());
+        int count = list.size();
         if (count == 0) {
             String reason = ProcessReader.lastError();
             if (reason.length() == 0) {
@@ -1140,21 +1150,21 @@ public class MainActivity extends Activity {
             row.addView(text(String.format(Locale.CHINA, "%.1f%%", info.cpuPercent), 12, false, Color.rgb(95, 99, 104)), new LinearLayout.LayoutParams(0, dp(54), 1));
             card.addView(row);
         }
-        content.addView(card);
     }
 
     private TextView sortHeader(String label, int mode) {
-        String arrow = processSortMode == mode ? (processSortAscending ? " ?" : " ?") : " ?";
+        String arrow = processSortMode == mode ? (processSortAscending ? " ^" : " v") : " -";
         TextView view = text(label + arrow, 12, true, Color.rgb(130, 134, 138));
         view.setGravity(Gravity.CENTER_VERTICAL);
         view.setOnClickListener(v -> {
+            press(v);
             if (processSortMode == mode) {
                 processSortAscending = !processSortAscending;
             } else {
                 processSortMode = mode;
                 processSortAscending = false;
             }
-            render();
+            refreshProcessListOnly();
         });
         return view;
     }

@@ -51,6 +51,9 @@ public class MainActivity extends Activity {
     private StatsDatabase database;
     private Handler handler;
     private LinearLayout root;
+    private LinearLayout topBar;
+    private LinearLayout tabsBar;
+    private final TextView[] tabViews = new TextView[4];
     private FrameLayout contentHost;
     private View currentPageView;
     private View previewPageView;
@@ -197,7 +200,8 @@ public class MainActivity extends Activity {
             root.addView(contentHost, new LinearLayout.LayoutParams(-1, 0, 1));
         } else {
             root.setBackgroundColor(pageBgColor());
-            refreshTopBars();
+            updateTopBar();
+            updateTabs();
             contentHost.animate().cancel();
             contentHost.setTranslationX(0);
             contentHost.setAlpha(1f);
@@ -283,40 +287,18 @@ public class MainActivity extends Activity {
         return pageView;
     }
 
-    private void refreshTopBars() {
-        if (root == null || root.getChildCount() < 2) return;
-        root.removeViews(0, Math.min(2, root.getChildCount()));
-        addTopBarAt(0);
-        addTabsAt(1);
-    }
-
     private void addTopBar() {
-        addTopBarAt(-1);
+        topBar = new LinearLayout(this);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        topBar.setPadding(0, 0, 0, 0);
+        root.addView(topBar);
+        updateTopBar();
     }
 
-    private void addTopBarAt(int index) {
-        LinearLayout bar = new LinearLayout(this);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(0, 0, 0, 0);
-        TextView back = text(page == 0 ? "" : "<", 38, false, Color.rgb(32, 34, 36));
-        back.setGravity(Gravity.CENTER);
-        back.setOnClickListener(v -> {
-            page = 0;
-            render();
-        });
-        bar.addView(back, new LinearLayout.LayoutParams(0, statusBarSpace()));
-        if (page == 0) {
-            ImageView logo = new ImageView(this);
-            logo.setImageResource(getApplicationInfo().icon);
-            logo.setPadding(dp(5), dp(5), dp(5), dp(5));
-            logo.setBackgroundResource(R.drawable.app_logo_bg);
-            LinearLayout.LayoutParams logoLp = new LinearLayout.LayoutParams(0, statusBarSpace());
-            logoLp.setMargins(0, 0, dp(10), 0);
-            bar.addView(logo, logoLp);
-        }
-        bar.addView(new View(this), new LinearLayout.LayoutParams(0, statusBarSpace(), 1));
-        if (index >= 0) root.addView(bar, index);
-        else root.addView(bar);
+    private void updateTopBar() {
+        if (topBar == null) return;
+        topBar.removeAllViews();
+        topBar.addView(new View(this), new LinearLayout.LayoutParams(0, statusBarSpace(), 1));
     }
 
     private int statusBarSpace() {
@@ -354,28 +336,40 @@ public class MainActivity extends Activity {
         tabs.addView(tab("耗电", 1), new LinearLayout.LayoutParams(0, dp(42), 1));
         tabs.addView(tab("充电", 2), new LinearLayout.LayoutParams(0, dp(42), 1));
         tabs.addView(tab("进程", 3), new LinearLayout.LayoutParams(0, dp(42), 1));
-        root.addView(tabs);
-    }
-
-    private void addTabsAt(int index) {
-        LinearLayout tabs = new LinearLayout(this);
-        tabs.setPadding(dp(14), dp(4), dp(14), dp(6));
-        tabs.addView(tab("总览", 0), new LinearLayout.LayoutParams(0, dp(42), 1));
-        tabs.addView(tab("耗电", 1), new LinearLayout.LayoutParams(0, dp(42), 1));
-        tabs.addView(tab("充电", 2), new LinearLayout.LayoutParams(0, dp(42), 1));
-        tabs.addView(tab("进程", 3), new LinearLayout.LayoutParams(0, dp(42), 1));
-        root.addView(tabs, index);
+        tabsBar = tabs;
+        root.addView(tabsBar);
+        updateTabs();
     }
 
     private TextView tab(String label, int target) {
-        TextView view = text(label, 15, true, target == page ? Color.WHITE : Color.rgb(52, 55, 58));
+        TextView view = text(tabLabel(target), 15, true, target == page ? Color.WHITE : primaryTextColor());
         view.setGravity(Gravity.CENTER);
-        view.setBackground(rounded(target == page ? accentColor() : (isDarkMode() ? Color.rgb(34, 39, 46) : Color.WHITE), dp(12)));
         view.setOnClickListener(v -> {
             press(v);
             switchPage(target);
         });
+        tabViews[target] = view;
         return view;
+    }
+
+    private String tabLabel(int target) {
+        if (target == 1) return "\u8017\u7535";
+        if (target == 2) return "\u5145\u7535";
+        if (target == 3) return "\u8fdb\u7a0b";
+        return "\u603b\u89c8";
+    }
+
+    private void updateTabs() {
+        for (int i = 0; i < tabViews.length; i++) {
+            TextView tab = tabViews[i];
+            if (tab == null) continue;
+            boolean selected = i == page;
+            tab.animate().cancel();
+            tab.setText(tabLabel(i));
+            tab.setTextColor(selected ? Color.WHITE : primaryTextColor());
+            tab.setBackground(rounded(selected ? accentColor() : (isDarkMode() ? Color.rgb(34, 39, 46) : Color.WHITE), dp(12)));
+            tab.setAlpha(selected ? 1f : 0.92f);
+        }
     }
 
     private void switchPage(int target) {
@@ -445,7 +439,8 @@ public class MainActivity extends Activity {
             }
         }
         root.setBackgroundColor(pageBgColor());
-        refreshTopBars();
+        updateTopBar();
+        updateTabs();
         pageSwitching = false;
         lastPageForAnimation = page;
     }
@@ -1184,6 +1179,7 @@ public class MainActivity extends Activity {
                 processSortMode = mode;
                 processSortAscending = false;
             }
+            processVisibleLimit = 20;
             refreshProcessListOnly();
         });
         return view;
@@ -1630,11 +1626,20 @@ public class MainActivity extends Activity {
     private void addChartCard(LinearLayout content, String title, List<BatterySample> samples, int type, int height) {
         LinearLayout card = card();
         card.setOrientation(LinearLayout.VERTICAL);
-        card.addView(text(title, 19, true, Color.rgb(70, 72, 76)), new LinearLayout.LayoutParams(-1, dp(42)));
+        card.addView(text(chartTitle(type, title), 19, true, Color.rgb(70, 72, 76)), new LinearLayout.LayoutParams(-1, dp(42)));
         ChartView chart = new ChartView(this);
         chart.setData(samples, type);
         card.addView(chart, new LinearLayout.LayoutParams(-1, height));
         content.addView(card);
+    }
+
+    private String chartTitle(int type, String fallback) {
+        if (type == ChartView.TYPE_POWER_TIME) return "\u529f\u7387 / \u65f6\u95f4";
+        if (type == ChartView.TYPE_LEVEL_TIME) return "\u7535\u91cf / \u65f6\u95f4";
+        if (type == ChartView.TYPE_TEMP_TIME) return "\u6e29\u5ea6 / \u65f6\u95f4";
+        if (type == ChartView.TYPE_CURRENT_LEVEL) return "\u7535\u6d41 / \u7535\u91cf";
+        if (type == ChartView.TYPE_USAGE) return "\u4f7f\u7528\u8fc7\u7a0b";
+        return fallback;
     }
 
     private void addHintCard(LinearLayout content, String msg, String action, View.OnClickListener listener) {
@@ -1852,7 +1857,7 @@ public class MainActivity extends Activity {
     }
 
     private TextView logoBadge() {
-        TextView logo = text("?", 18, true, Color.WHITE);
+        TextView logo = text("\u7535", 18, true, Color.WHITE);
         logo.setGravity(Gravity.CENTER);
         logo.setBackground(rounded(Color.rgb(21, 202, 203), dp(10)));
         return logo;

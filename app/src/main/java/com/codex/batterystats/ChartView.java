@@ -51,7 +51,7 @@ public class ChartView extends View {
         if (samples.size() < 2) {
             paint.setColor(Color.rgb(160, 160, 160));
             paint.setTextSize(dp(13));
-            canvas.drawText("绛夊緟閲囨牱鏁版嵁", left + dp(10), (top + bottom) / 2, paint);
+            canvas.drawText("\u7b49\u5f85\u91c7\u6837\u6570\u636e", left + dp(10), (top + bottom) / 2, paint);
             return;
         }
         drawLabels(canvas, left, top, right, bottom);
@@ -88,8 +88,8 @@ public class ChartView extends View {
             yTop = String.format(Locale.CHINA, "%.0fA", Math.max(1, maxCurrent()));
             yMid = "0A";
         } else if (type == TYPE_TEMP_TIME) {
-            yTop = String.format(Locale.CHINA, "%.0f掳C", Math.max(40, maxTemp()));
-            yMid = String.format(Locale.CHINA, "%.0f掳C", Math.max(0, minTemp()));
+            yTop = String.format(Locale.CHINA, "%.0fC", Math.max(40, maxTemp()));
+            yMid = String.format(Locale.CHINA, "%.0fC", Math.max(0, minTemp()));
         } else {
             yTop = "100%";
             yMid = "0%";

@@ -72,6 +72,7 @@ public class MainActivity extends Activity {
     private List<ProcessInfo> processCache = new ArrayList<>();
     private LinearLayout processListParent;
     private LinearLayout processListCard;
+    private boolean processSkeletonVisible;
     private int processListStartIndex;
     private int processVisibleLimit = 20;
     private final Map<String, String> labelCache = new HashMap<>();
@@ -91,6 +92,7 @@ public class MainActivity extends Activity {
     private float swipeDownX;
     private float swipeDownY;
     private boolean swipeHorizontal;
+    private boolean swipeVertical;
     private boolean pageSwitching;
     private int previewTargetPage = -1;
     private int lastPageForAnimation = -1;
@@ -264,7 +266,6 @@ public class MainActivity extends Activity {
             pageView = content;
         } else {
             scroll = new ScrollView(this);
-            installSwipeNavigation(scroll);
             if (assignCurrentScroll) currentScroll = scroll;
             scroll.addView(content);
             pageView = scroll;
@@ -503,10 +504,6 @@ public class MainActivity extends Activity {
         previewTargetPage = -1;
     }
 
-    private void installSwipeNavigation(View view) {
-        view.setOnTouchListener((v, event) -> handleSwipeEvent(event));
-    }
-
     private boolean handleSwipeEvent(MotionEvent event) {
         if (processDialog != null && processDialog.isShowing()) return false;
         if (page == 3 && processSearchFocused) return false;
@@ -515,6 +512,7 @@ public class MainActivity extends Activity {
             swipeDownX = event.getRawX();
             swipeDownY = event.getRawY();
             swipeHorizontal = false;
+            swipeVertical = false;
             if (currentPageView != null) {
                 currentPageView.animate().cancel();
             }
@@ -523,7 +521,11 @@ public class MainActivity extends Activity {
         if (event.getAction() == MotionEvent.ACTION_MOVE) {
             float dx = event.getRawX() - swipeDownX;
             float dy = event.getRawY() - swipeDownY;
-            if (!swipeHorizontal && Math.abs(dx) > dp(10) && Math.abs(dx) > Math.abs(dy) * 1.25f) {
+            if (!swipeHorizontal && Math.abs(dy) > dp(8) && Math.abs(dy) > Math.abs(dx) * 1.15f) {
+                swipeVertical = true;
+                return false;
+            }
+            if (!swipeVertical && !swipeHorizontal && Math.abs(dx) > dp(28) && Math.abs(dx) > Math.abs(dy) * 2.2f) {
                 swipeHorizontal = true;
                 if (currentScroll != null) {
                     currentScroll.requestDisallowInterceptTouchEvent(true);
@@ -554,7 +556,7 @@ public class MainActivity extends Activity {
         if (event.getAction() == MotionEvent.ACTION_UP) {
             float dx = event.getRawX() - swipeDownX;
             float dy = event.getRawY() - swipeDownY;
-            if (Math.abs(dx) > dp(70) && Math.abs(dx) > Math.abs(dy) * 1.6f) {
+            if (!swipeVertical && Math.abs(dx) > dp(96) && Math.abs(dx) > Math.abs(dy) * 2.2f) {
                 int target = swipeTargetForDelta(dx);
                 if (target >= 0) {
                     switchPageWithSwipe(target, dx);
@@ -566,11 +568,13 @@ public class MainActivity extends Activity {
             }
             settleSwipe();
             swipeHorizontal = false;
+            swipeVertical = false;
             return true;
         }
         if (event.getAction() == MotionEvent.ACTION_CANCEL) {
             settleSwipe();
             swipeHorizontal = false;
+            swipeVertical = false;
             return true;
         }
         return false;
@@ -589,12 +593,17 @@ public class MainActivity extends Activity {
                 swipeDownX = event.getRawX();
                 swipeDownY = event.getRawY();
                 swipeHorizontal = false;
+                swipeVertical = false;
                 return false;
             }
             if (event.getAction() == MotionEvent.ACTION_MOVE) {
                 float dx = event.getRawX() - swipeDownX;
                 float dy = event.getRawY() - swipeDownY;
-                if (Math.abs(dx) > dp(10) && Math.abs(dx) > Math.abs(dy) * 1.25f) {
+                if (Math.abs(dy) > dp(8) && Math.abs(dy) > Math.abs(dx) * 1.15f) {
+                    swipeVertical = true;
+                    return false;
+                }
+                if (!swipeVertical && Math.abs(dx) > dp(28) && Math.abs(dx) > Math.abs(dy) * 2.2f) {
                     swipeHorizontal = true;
                     requestDisallowInterceptTouchEvent(true);
                     return true;
@@ -1049,6 +1058,7 @@ public class MainActivity extends Activity {
         processListParent = content;
         processListStartIndex = content.getChildCount();
         processListCard = null;
+        processSkeletonVisible = false;
         appendProcessListViews(content);
     }
 
@@ -1056,8 +1066,10 @@ public class MainActivity extends Activity {
         if (processLoading && processCache.isEmpty()) {
             addLoadingCard(content, "\u6b63\u5728\u8bfb\u53d6\u8fdb\u7a0b\u4fe1\u606f...");
             addProcessSkeletonCard(content);
+            processSkeletonVisible = true;
             return;
         }
+        processSkeletonVisible = false;
         processListCard = createProcessListCard(filteredProcessList());
         content.addView(processListCard);
     }
@@ -1095,6 +1107,9 @@ public class MainActivity extends Activity {
             return;
         }
         final int y = currentScroll == null ? 0 : currentScroll.getScrollY();
+        if (processSkeletonVisible && processLoading && processCache.isEmpty()) {
+            return;
+        }
         if (processListCard != null) {
             populateProcessListCard(processListCard, filteredProcessList());
             if (currentScroll != null) {

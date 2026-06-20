@@ -161,7 +161,7 @@ final class BatteryReader {
         if (Double.isNaN(powerW) || Double.isInfinite(powerW)) {
             return 0;
         }
-        double max = charging ? 240.0 : 35.0;
+        double max = charging ? 100.0 : 35.0;
         return Math.max(0, Math.min(max, Math.abs(powerW)));
     }
 

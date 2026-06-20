@@ -260,7 +260,7 @@ while true; do
   current="$(norm_current "$raw_current")"
   voltage="$(norm_voltage "$raw_voltage")"
   temp="$(awk -v t="$raw_temp" 'BEGIN { if (t > 1000 || t < -1000) printf "%.1f", t/1000; else printf "%.1f", t/10; }')"
-  power="$(awk -v c="$current" -v v="$voltage" -v s="$status" 'BEGIN { if (c < 0) c=-c; p=c*v; max=(s==2 || s==5) ? 240 : 35; if (p > max) p=max; if (p < 0) p=0; printf "%.6f", p; }')"
+  power="$(awk -v c="$current" -v v="$voltage" -v s="$status" 'BEGIN { if (c < 0) c=-c; p=c*v; max=(s==2 || s==5) ? 100 : 35; if (p > max) p=max; if (p < 0) p=0; printf "%.6f", p; }')"
 
   if [ $((now_s - cached_pkg_at)) -ge 60 ] || [ -z "$cached_pkg" ]; then
     cached_pkg="$(foreground_pkg)"

@@ -1,8 +1,6 @@
 package com.codex.batterystats;
 
 import android.app.Activity;
-import android.app.AppOpsManager;
-import android.app.Dialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
@@ -24,9 +22,7 @@ import android.view.View;
 import android.view.Display;
 import android.view.ViewGroup;
 import android.view.Window;
-import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
-import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -87,9 +83,6 @@ public class MainActivity extends Activity {
     private long lastCpuTotal;
     private GpuInfo cachedGpuInfo;
     private long cachedGpuAt;
-    private Dialog processDialog;
-    private Handler processDialogHandler;
-    private Runnable processDialogUpdater;
     private final Map<Integer, long[]> coreLast = new HashMap<>();
     private long lastLocalBatterySampleAt;
     private boolean moduleOkCached;
@@ -163,7 +156,6 @@ public class MainActivity extends Activity {
         database = new StatsDatabase(this);
         handler = new Handler();
         preferHighRefreshRate();
-        ensurePermissions();
         render();
     }
 
@@ -180,7 +172,6 @@ public class MainActivity extends Activity {
     protected void onPause() {
         handler.removeCallbacks(refresher);
         handler.removeCallbacks(overviewBatteryRefresher);
-        stopProcessDialogUpdater();
         super.onPause();
     }
 
@@ -191,9 +182,6 @@ public class MainActivity extends Activity {
             return;
         }
         super.onBackPressed();
-    }
-
-    private void ensurePermissions() {
     }
 
     private void insertLocalBatterySampleIfNeeded() {
@@ -298,20 +286,6 @@ public class MainActivity extends Activity {
 
     private void updateCurrentScrollFromPager() {
         currentScroll = page >= 0 && page < pageScrolls.length ? pageScrolls[page] : null;
-    }
-
-    private ScrollView findScrollView(View view) {
-        if (view instanceof ScrollView) {
-            return (ScrollView) view;
-        }
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                ScrollView found = findScrollView(group.getChildAt(i));
-                if (found != null) return found;
-            }
-        }
-        return null;
     }
 
     private View pageView(int targetPage) {
@@ -639,147 +613,6 @@ public class MainActivity extends Activity {
         content.addView(card);
     }
 
-    private void addOverview(LinearLayout content, boolean moduleOk) {
-        BatterySample latest = database.latest();
-        addHomeResourceCard(content);
-        addHomeGpuCard(content);
-        addHomeCpuCard(content);
-        addHomeBottomCards(content, latest, moduleOk);
-        addDaemonToggleCard(content);
-    }
-
-    private void addProcessPreview(LinearLayout content) {
-        LinearLayout card = card();
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.addView(text("进程信息", 19, true, primaryTextColor()), new LinearLayout.LayoutParams(-1, dp(42)));
-        card.addView(text("松手后进入进程页面", 14, false, secondaryTextColor()), new LinearLayout.LayoutParams(-1, dp(38)));
-        content.addView(card);
-    }
-
-    private void addDaemonToggleCard(LinearLayout content) {
-        boolean running = RootShell.isStatsDaemonRunning();
-        LinearLayout card = card();
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setOnClickListener(v -> switchPage(3));
-        LinearLayout texts = new LinearLayout(this);
-        texts.setOrientation(LinearLayout.VERTICAL);
-        texts.addView(text(running ? "统计守护运行中" : "统计守护已暂停", 17, true, Color.rgb(64, 68, 72)));
-        texts.addView(text(running ? "需要兼容敏感应用时可临时关闭，无需重启。" : "关闭期间不会记录新统计，点击按钮可立即恢复。", 13, false, Color.rgb(145, 148, 153)));
-        card.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView toggle = smallAction(running ? "暂停" : "启动", v -> {
-            boolean ok = RootShell.setStatsDaemonEnabled(!running);
-            Toast.makeText(this, ok ? (!running ? "已启动统计守护" : "已暂停统计守护") : "操作失败，请检查 Root/模块路径", Toast.LENGTH_SHORT).show();
-            render();
-        });
-        card.addView(toggle, new LinearLayout.LayoutParams(dp(74), dp(42)));
-        content.addView(card);
-    }
-
-    private void addHomeResourceCard(LinearLayout content) {
-        LinearLayout card = card();
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setOnClickListener(v -> switchPage(3));
-        RingView ring = new RingView(this);
-        MemInfo mem = readMemInfo();
-        ring.setLevel(mem.memPercent);
-        card.addView(ring, new LinearLayout.LayoutParams(dp(84), dp(84)));
-
-        LinearLayout info = new LinearLayout(this);
-        info.setOrientation(LinearLayout.VERTICAL);
-        info.setPadding(dp(10), 0, 0, 0);
-        addProgressLine(info, "物理内存", mem.memPercent, mem.usedMemText + " / " + mem.totalMemText);
-        addProgressLine(info, "交换分区", mem.swapPercent, mem.usedSwapText + " / " + mem.totalSwapText);
-        info.addView(text("Used " + mem.memPercent + "%   Cached " + mem.cachedText, 10, false, Color.rgb(145, 148, 153)));
-        card.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
-        content.addView(card);
-    }
-
-    private void addProgressLine(LinearLayout parent, String label, int percent, String right) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.addView(text(label, 12, true, Color.rgb(70, 72, 76)), new LinearLayout.LayoutParams(0, dp(24), 7));
-        TextView value = text(percent + "%  " + right, 10, false, Color.rgb(120, 123, 128));
-        value.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
-        row.addView(value, new LinearLayout.LayoutParams(0, dp(24), 13));
-        parent.addView(row);
-        View bg = new View(this);
-        bg.setBackground(rounded(Color.rgb(236, 238, 240), dp(4)));
-        LinearLayout wrap = new LinearLayout(this);
-        wrap.setBackground(rounded(Color.rgb(236, 238, 240), dp(4)));
-        View fill = new View(this);
-        fill.setBackground(rounded(Color.rgb(156, 203, 250), dp(4)));
-        wrap.addView(fill, new LinearLayout.LayoutParams(0, dp(7), Math.max(1, percent)));
-        wrap.addView(new View(this), new LinearLayout.LayoutParams(0, dp(7), Math.max(1, 100 - percent)));
-        parent.addView(wrap, new LinearLayout.LayoutParams(-1, dp(7)));
-    }
-
-    private void addHomeGpuCard(LinearLayout content) {
-        LinearLayout card = card();
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        TextView gpu = text("GPU", 18, false, Color.rgb(145, 148, 153));
-        gpu.setGravity(Gravity.CENTER);
-        gpu.setBackground(rounded(Color.rgb(242, 243, 245), dp(48)));
-        card.addView(gpu, new LinearLayout.LayoutParams(dp(64), dp(64)));
-        LinearLayout info = new LinearLayout(this);
-        info.setOrientation(LinearLayout.VERTICAL);
-        info.setPadding(dp(16), 0, 0, 0);
-        GpuInfo gpuInfo = readGpuInfo();
-        info.addView(text(gpuInfo.freqText, 20, true, Color.rgb(52, 55, 58)));
-        info.addView(text("负载: " + gpuInfo.loadText, 12, false, Color.rgb(120, 123, 128)));
-        info.addView(text(Build.HARDWARE + "  Android " + Build.VERSION.RELEASE, 12, false, Color.rgb(160, 163, 168)));
-        card.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
-        content.addView(card);
-    }
-
-    private void addHomeCpuCard(LinearLayout content) {
-        LinearLayout card = card();
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setOnClickListener(v -> switchPage(3));
-        LinearLayout top = new LinearLayout(this);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout right = new LinearLayout(this);
-        right.setOrientation(LinearLayout.VERTICAL);
-        right.setGravity(Gravity.CENTER);
-        MiniBarsView bars = new MiniBarsView(this);
-        double cpuLoad = readCpuLoadPercent();
-        bars.setValues(cpuBars(cpuLoad));
-        right.addView(bars, new LinearLayout.LayoutParams(dp(112), dp(38)));
-        TextView cpu = text("CPU", 18, false, Color.rgb(78, 82, 86));
-        cpu.setGravity(Gravity.CENTER);
-        right.addView(cpu);
-        right.addView(text(Build.HARDWARE, 13, true, Color.rgb(52, 55, 58)));
-        right.addView(text(String.format(Locale.CHINA, "负载: %.0f%%", cpuLoad), 12, false, Color.rgb(145, 148, 153)));
-        top.addView(right, new LinearLayout.LayoutParams(-1, dp(84)));
-        card.addView(top);
-
-        View line = new View(this);
-        line.setBackgroundColor(Color.rgb(232, 234, 236));
-        card.addView(line, new LinearLayout.LayoutParams(-1, 1));
-        LinearLayout coresWrap = new LinearLayout(this);
-        coresWrap.setOrientation(LinearLayout.VERTICAL);
-        coresWrap.setPadding(0, dp(6), 0, 0);
-        float[] coreLoads = readCoreLoads();
-        int coreCount = Math.min(12, coreLoads.length);
-        int rows = (int) Math.ceil(coreCount / 4.0);
-        for (int rowIndex = 0; rowIndex < rows; rowIndex++) {
-            LinearLayout row = new LinearLayout(this);
-            for (int col = 0; col < 4; col++) {
-                int core = rowIndex * 4 + col;
-                if (core < coreCount) {
-                    row.addView(coreBox(core, coreLoads[core]), new LinearLayout.LayoutParams(0, dp(48), 1));
-                } else {
-                    row.addView(new View(this), new LinearLayout.LayoutParams(0, dp(48), 1));
-                }
-            }
-            coresWrap.addView(row);
-        }
-        card.addView(coresWrap);
-        content.addView(card);
-    }
-
     private void addHomeBottomCards(LinearLayout content, BatterySample latest, boolean moduleOk) {
         LinearLayout row = new LinearLayout(this);
         LinearLayout battery = card();
@@ -803,18 +636,6 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1);
         lp.setMargins(left ? 0 : dp(5), 0, left ? dp(5) : 0, 0);
         return lp;
-    }
-
-    private LinearLayout coreBox(int index, float load) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setGravity(Gravity.CENTER);
-        MiniBarsView bars = new MiniBarsView(this);
-        bars.setValues(new float[]{load});
-        box.addView(bars, new LinearLayout.LayoutParams(dp(42), dp(16)));
-        box.addView(text("CPU" + index + " " + Math.round(load * 100) + "%", 10, true, Color.rgb(92, 96, 100)));
-        box.addView(text(readFirstLine("/sys/devices/system/cpu/cpu" + index + "/cpufreq/scaling_cur_freq", "--") + "KHz", 9, false, Color.rgb(145, 148, 153)));
-        return box;
     }
 
     private float[] cpuBars(double load) {
@@ -998,18 +819,6 @@ public class MainActivity extends Activity {
             if (kb <= 0) return "--";
             return String.format(Locale.CHINA, "%.1fGB", kb / 1024.0 / 1024.0);
         }
-    }
-
-    private Button commandButton(String label, int target) {
-        Button button = button(label);
-        button.setOnClickListener(v -> switchPage(target));
-        return button;
-    }
-
-    private LinearLayout.LayoutParams buttonLp(boolean left) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(48), 1);
-        lp.setMargins(left ? 0 : dp(8), 0, left ? dp(8) : 0, 0);
-        return lp;
     }
 
     private void addChargePage(LinearLayout content, boolean loadNow) {
@@ -1338,106 +1147,6 @@ public class MainActivity extends Activity {
         return;
     }
 
-    private void showProcessDialogInApp(ProcessInfo info) {
-        stopProcessDialogUpdater();
-        processDialog = new Dialog(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(16), dp(14), dp(16), dp(14));
-        box.setBackground(rounded(cardColor(), dp(18)));
-
-        LinearLayout head = new LinearLayout(this);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        head.addView(appIconView(info.packageName, info.packageName, 0), new LinearLayout.LayoutParams(dp(42), dp(42)));
-        LinearLayout titleBox = new LinearLayout(this);
-        titleBox.setOrientation(LinearLayout.VERTICAL);
-        titleBox.setPadding(dp(10), 0, 0, 0);
-        titleBox.addView(text(cachedLabel(info.packageName), 16, true, primaryTextColor()));
-        titleBox.addView(text(info.processName + "  PID " + info.pid, 11, false, secondaryTextColor()));
-        head.addView(titleBox, new LinearLayout.LayoutParams(0, dp(48), 1));
-        TextView close = text("X", 16, true, secondaryTextColor());
-        close.setGravity(Gravity.CENTER);
-        close.setBackground(rounded(isDarkMode() ? Color.rgb(49, 53, 60) : Color.rgb(238, 240, 243), dp(16)));
-        close.setOnClickListener(v -> {
-            stopProcessDialogUpdater();
-            if (processDialog != null) processDialog.dismiss();
-        });
-        head.addView(close, new LinearLayout.LayoutParams(dp(36), dp(36)));
-        box.addView(head);
-
-        LinearLayout metrics = new LinearLayout(this);
-        metrics.setPadding(0, dp(12), 0, dp(4));
-        TextView cpuValue = metricText("--", "CPU");
-        TextView resValue = metricText("--", "RES");
-        TextView coresValue = metricText("--", "核心");
-        metrics.addView(cpuValue, new LinearLayout.LayoutParams(0, dp(64), 1));
-        metrics.addView(resValue, new LinearLayout.LayoutParams(0, dp(64), 1));
-        metrics.addView(coresValue, new LinearLayout.LayoutParams(0, dp(64), 1));
-        box.addView(metrics);
-
-        MiniBarsView bars = new MiniBarsView(this);
-        box.addView(bars, new LinearLayout.LayoutParams(-1, dp(76)));
-        LinearLayout coreGrid = new LinearLayout(this);
-        coreGrid.setOrientation(LinearLayout.VERTICAL);
-        coreGrid.setPadding(0, dp(8), 0, 0);
-        box.addView(coreGrid);
-        TextView detail = text("正在读取...", 12, false, secondaryTextColor());
-        box.addView(detail, new LinearLayout.LayoutParams(-1, dp(30)));
-
-        processDialog.setContentView(box);
-        if (processDialog.getWindow() != null) {
-            processDialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
-        }
-        processDialog.setOnDismissListener(d -> stopProcessDialogUpdater());
-        processDialog.show();
-
-        coreLast.clear();
-        readCoreLoads();
-        processDialogHandler = new Handler();
-        processDialogUpdater = new Runnable() {
-            @Override public void run() {
-                ProcessInfo latest = findProcess(info.pid);
-                if (latest == null) {
-                    latest = info;
-                }
-                cpuValue.setText(String.format(Locale.CHINA, "%.1f%%\nCPU", latest.cpuPercent));
-                resValue.setText(latest.resText() + "\nRES");
-                float[] coreLoads = readCoreLoads();
-                coresValue.setText(coreLoads.length + "\n核心");
-                bars.setValues(coreLoads);
-                renderCoreGrid(coreGrid, coreLoads);
-                detail.setText("核心负载实时刷新中");
-                processDialogHandler.postDelayed(this, 1000);
-            }
-        };
-        processDialogHandler.post(processDialogUpdater);
-    }
-
-    private TextView metricText(String value, String label) {
-        TextView view = text(value + "\n" + label, 15, true, accentColor());
-        view.setGravity(Gravity.CENTER);
-        view.setBackground(rounded(isDarkMode() ? Color.rgb(38, 43, 49) : Color.rgb(244, 248, 252), dp(12)));
-        return view;
-    }
-
-    private void stopProcessDialogUpdater() {
-        if (processDialogHandler != null && processDialogUpdater != null) {
-            processDialogHandler.removeCallbacks(processDialogUpdater);
-        }
-        processDialogUpdater = null;
-    }
-
-    private ProcessInfo findProcess(int pid) {
-        for (ProcessInfo info : processCache) {
-            if (info.pid == pid) return info;
-        }
-        List<ProcessInfo> latest = ProcessReader.read(this, "", 0, false);
-        for (ProcessInfo info : latest) {
-            if (info.pid == pid) return info;
-        }
-        return null;
-    }
-
     private float[] readCoreLoads() {
         String stat = readProcStatText();
         if (stat.length() == 0) return new float[]{0.05f};
@@ -1485,29 +1194,6 @@ public class MainActivity extends Activity {
         return RootShell.run("cat /proc/stat 2>/dev/null", 800);
     }
 
-    private void renderCoreGrid(LinearLayout grid, float[] values) {
-        grid.removeAllViews();
-        int count = values.length;
-        int columns = count > 4 ? 4 : Math.max(1, count);
-        for (int rowIndex = 0; rowIndex * columns < count; rowIndex++) {
-            LinearLayout row = new LinearLayout(this);
-            for (int col = 0; col < columns; col++) {
-                int idx = rowIndex * columns + col;
-                if (idx < count) {
-                    TextView cell = text("CPU" + idx + "  " + Math.round(values[idx] * 100) + "%", 11, true, secondaryTextColor());
-                    cell.setGravity(Gravity.CENTER);
-                    cell.setBackground(rounded(isDarkMode() ? Color.rgb(38, 43, 49) : Color.rgb(244, 248, 252), dp(8)));
-                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(30), 1);
-                    lp.setMargins(dp(3), dp(3), dp(3), dp(3));
-                    row.addView(cell, lp);
-                } else {
-                    row.addView(new View(this), new LinearLayout.LayoutParams(0, dp(30), 1));
-                }
-            }
-            grid.addView(row);
-        }
-    }
-
     private List<ProcessInfo> filteredProcessList() {
         ArrayList<ProcessInfo> out = new ArrayList<>();
         String q = processKeyword == null ? "" : processKeyword.trim().toLowerCase(Locale.US);
@@ -1534,54 +1220,6 @@ public class MainActivity extends Activity {
             java.util.Collections.reverse(out);
         }
         return out;
-    }
-
-    private void addStatusCard(LinearLayout content, BatterySample latest) {
-        LinearLayout card = card();
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        RingView ring = new RingView(this);
-        ring.setLevel(latest == null ? 0 : latest.level);
-        card.addView(ring, new LinearLayout.LayoutParams(dp(160), dp(160)));
-        LinearLayout info = new LinearLayout(this);
-        info.setOrientation(LinearLayout.VERTICAL);
-        info.setPadding(dp(12), 0, 0, 0);
-        if (latest == null) {
-            info.addView(text("等待采样", 20, true, Color.rgb(70, 72, 76)));
-            info.addView(text("模块启动后会自动记录", 14, false, Color.rgb(145, 148, 153)));
-        } else {
-            info.addView(text(latest.isCharging() ? "\u5145\u7535\u4e2d" : "\u672a\u5145\u7535", 20, true, Color.rgb(70, 72, 76)));
-            info.addView(text(String.format(Locale.CHINA, "%.2fW", latest.isCharging() ? latest.powerW : -latest.powerW), 16, false, Color.rgb(145, 148, 153)));
-            info.addView(text(String.format(Locale.CHINA, "%.1fC    %.3fV", latest.tempC, latest.voltageV), 16, false, Color.rgb(145, 148, 153)));
-            info.addView(text(String.format(Locale.CHINA, "%.0fmA", Math.abs(latest.currentA * 1000)), 16, false, Color.rgb(145, 148, 153)));
-        }
-        card.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
-        content.addView(card);
-    }
-
-    private void addProcessSummary(LinearLayout content, List<BatterySample> samples, boolean charging) {
-        LinearLayout card = card();
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        TextView icon = logoBadge();
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(42), dp(42));
-        iconLp.setMargins(0, 0, dp(10), 0);
-        card.addView(icon, iconLp);
-        String time = "--";
-        String delta = "--";
-        String energy = "--";
-        if (samples.size() >= 2) {
-            BatterySample first = samples.get(0);
-            BatterySample last = samples.get(samples.size() - 1);
-            time = formatClock(first.timeMs) + " ~ " + formatClock(last.timeMs);
-            delta = (charging ? "+" : "") + (last.level - first.level) + "%";
-            energy = String.format(Locale.CHINA, "%.2fW", avgPower(samples));
-        }
-        card.addView(text(time, 15, false, Color.rgb(120, 123, 128)), new LinearLayout.LayoutParams(0, dp(48), 2));
-        card.addView(text(BatteryReader.formatDuration(duration(samples)), 15, false, Color.rgb(120, 123, 128)), new LinearLayout.LayoutParams(0, dp(48), 1));
-        card.addView(text(delta, 15, false, Color.rgb(120, 123, 128)), new LinearLayout.LayoutParams(0, dp(48), 1));
-        card.addView(text(energy, 15, false, Color.rgb(120, 123, 128)), new LinearLayout.LayoutParams(0, dp(48), 1));
-        content.addView(card);
     }
 
     private void addDischargeUsageCard(LinearLayout content, List<BatterySample> samples) {
@@ -1641,8 +1279,8 @@ public class MainActivity extends Activity {
         LinearLayout bottom = metricRow();
         dischargeViews.lifeValue = metricValue("--");
         dischargeViews.screenLifeValue = metricValue("--");
-        bottom.addView(metric(dischargeViews.lifeValue, "理论续航"), new LinearLayout.LayoutParams(0, dp(62), 1));
-        bottom.addView(metric(dischargeViews.screenLifeValue, "亮屏续航"), new LinearLayout.LayoutParams(0, dp(62), 1));
+        bottom.addView(metric(dischargeViews.lifeValue, "\u8fd8\u80fd\u4f7f\u7528"), new LinearLayout.LayoutParams(0, dp(62), 1));
+        bottom.addView(metric(dischargeViews.screenLifeValue, "\u4eae\u5c4f\u53ef\u7528"), new LinearLayout.LayoutParams(0, dp(62), 1));
         card.addView(bottom);
         content.addView(card);
     }
@@ -1683,114 +1321,6 @@ public class MainActivity extends Activity {
         content.addView(card);
         dischargeViews.appList = list;
         updateAppUsageList(usages);
-    }
-
-    private void addUsageProcessCard(LinearLayout content, List<BatterySample> samples) {
-        LinearLayout card = card();
-        card.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout head = new LinearLayout(this);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        head.addView(text("使用过程", 18, true, Color.rgb(70, 72, 76)), new LinearLayout.LayoutParams(0, dp(36), 1));
-        head.addView(text(samples.isEmpty() ? "--" : samples.get(samples.size() - 1).level + "%", 18, false, Color.rgb(120, 123, 128)));
-        card.addView(head);
-        ChartView chart = new ChartView(this);
-        chart.setData(samples, ChartView.TYPE_USAGE);
-        card.addView(chart, new LinearLayout.LayoutParams(-1, dp(260)));
-        LinearLayout foot = new LinearLayout(this);
-        foot.setPadding(0, dp(8), 0, 0);
-        BatterySample latest = samples.isEmpty() ? database.latest() : samples.get(samples.size() - 1);
-        foot.addView(text(latest == null ? "--W" : String.format(Locale.CHINA, "%.2fW", sanePower(latest)), 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
-        foot.addView(text(latest == null ? "--C" : String.format(Locale.CHINA, "%.1fC", latest.tempC), 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
-        foot.addView(text(latest == null ? "--V" : String.format(Locale.CHINA, "%.3fV", latest.voltageV), 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
-        foot.addView(text(latest != null && latest.isCharging() ? "充电" : "未充电", 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
-        card.addView(foot);
-        content.addView(card);
-    }
-
-    private void addDischargeMetrics(LinearLayout content, List<BatterySample> samples) {
-        LinearLayout card = card();
-        card.setOrientation(LinearLayout.VERTICAL);
-        double avg = avgPower(samples);
-        long used = duration(samples);
-        long screenUsed = screenOnDuration(samples);
-        String life = "--";
-        String screenLife = "--";
-        if (!samples.isEmpty() && avg > 0.1) {
-            double whLeft = samples.get(samples.size() - 1).voltageV * batteryCapacityAh() * samples.get(samples.size() - 1).level / 100.0;
-            life = BatteryReader.formatDuration((long) (whLeft / avg * 3600000.0));
-            double screenAvg = screenOnAvgPower(samples);
-            if (screenAvg > 0.1) {
-                screenLife = BatteryReader.formatDuration((long) (whLeft / screenAvg * 3600000.0));
-            }
-        }
-        LinearLayout top = metricRow();
-        top.addView(metric(String.format(Locale.CHINA, "%.2fW", avg), "\u5e73\u5747\u529f\u8017"), new LinearLayout.LayoutParams(0, dp(64), 1));
-        top.addView(metric(BatteryReader.formatDuration(used), "\u5df2\u4f7f\u7528"), new LinearLayout.LayoutParams(0, dp(64), 1));
-        top.addView(metric(BatteryReader.formatDuration(screenUsed), "\u4eae\u5c4f"), new LinearLayout.LayoutParams(0, dp(64), 1));
-        card.addView(top);
-
-        View divider = new View(this);
-        divider.setBackgroundColor(isDarkMode() ? Color.rgb(43, 49, 56) : Color.rgb(236, 238, 241));
-        LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(-1, 1);
-        dividerLp.setMargins(0, dp(4), 0, dp(4));
-        card.addView(divider, dividerLp);
-
-        LinearLayout bottom = metricRow();
-        bottom.addView(metric(life, "\u7406\u8bba\u7eed\u822a"), new LinearLayout.LayoutParams(0, dp(62), 1));
-        bottom.addView(metric(screenLife, "\u4eae\u5c4f\u7eed\u822a"), new LinearLayout.LayoutParams(0, dp(62), 1));
-        card.addView(bottom);
-        content.addView(card);
-    }
-
-    private void addAppUsageCard(LinearLayout content) {
-        LinearLayout card = card();
-        card.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout titleRow = new LinearLayout(this);
-        titleRow.setGravity(Gravity.CENTER_VERTICAL);
-        titleRow.addView(logoBadge(), new LinearLayout.LayoutParams(dp(38), dp(38)));
-        TextView cardTitle = text("\u4f7f\u7528\u573a\u666f", 19, true, Color.rgb(70, 72, 76));
-        cardTitle.setPadding(dp(10), 0, 0, 0);
-        titleRow.addView(cardTitle, new LinearLayout.LayoutParams(0, dp(44), 1));
-        card.addView(titleRow);
-
-        LinearLayout filterRow = new LinearLayout(this);
-        filterRow.setGravity(Gravity.CENTER_VERTICAL);
-        filterRow.setPadding(0, dp(8), 0, dp(8));
-        filterRow.addView(smallAction(dischargeShowSystemApps ? "\u7cfb\u7edf\u5f00" : "\u7cfb\u7edf\u5173", v -> {
-            dischargeShowSystemApps = !dischargeShowSystemApps;
-            render();
-        }), new LinearLayout.LayoutParams(dp(78), dp(38)));
-        TextView sortButton = smallAction(sortName(), null);
-        sortButton.setOnClickListener(v -> showDischargeSortMenu(sortButton));
-        LinearLayout.LayoutParams sortLp = new LinearLayout.LayoutParams(0, dp(38), 1);
-        sortLp.setMargins(dp(8), 0, dp(8), 0);
-        filterRow.addView(sortButton, sortLp);
-        filterRow.addView(smallAction(dischargeSortAscending ? "\u6b63\u5e8f" : "\u5012\u5e8f", v -> {
-            dischargeSortAscending = !dischargeSortAscending;
-            render();
-        }), new LinearLayout.LayoutParams(dp(72), dp(38)));
-        card.addView(filterRow);
-        List<StatsDatabase.AppUsage> usages = filteredAppUsage();
-        int count = usages.size();
-        if (count == 0) {
-            card.addView(text("\u6682\u65e0\u5e94\u7528\u8017\u7535\u8bb0\u5f55\u3002\u6a21\u5757\u8fd0\u884c\u4e00\u6bb5\u65f6\u95f4\u540e\u4f1a\u663e\u793a\u524d\u53f0\u548c\u540e\u53f0\u8017\u7535\u3002", 14, false, Color.rgb(145, 148, 153)));
-        }
-        for (int i = 0; i < count; i++) {
-            StatsDatabase.AppUsage usage = usages.get(i);
-            LinearLayout row = new LinearLayout(this);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.addView(appIconView(usage.pkg, usage.label, i), new LinearLayout.LayoutParams(dp(48), dp(48)));
-            LinearLayout texts = new LinearLayout(this);
-            texts.setOrientation(LinearLayout.VERTICAL);
-            texts.setPadding(dp(12), 0, 0, 0);
-            texts.addView(text(usage.label, 16, true, Color.rgb(65, 68, 72)));
-            texts.addView(text(usage.subtitle(), 13, false, Color.rgb(145, 148, 153)));
-            texts.addView(text(usage.detail(), 12, false, Color.rgb(165, 168, 173)));
-            row.addView(texts, new LinearLayout.LayoutParams(0, dp(74), 1));
-            row.addView(text(BatteryReader.formatDuration(usage.durationMs), 14, false, Color.rgb(120, 123, 128)));
-            card.addView(row);
-        }
-        content.addView(card);
     }
 
     private String sortName() {
@@ -2174,10 +1704,8 @@ public class MainActivity extends Activity {
         if (snapshot.latest != null && snapshot.avgPower > 0.1) {
             double whLeft = snapshot.latest.voltageV * batteryCapacityAh() * snapshot.latest.level / 100.0;
             snapshot.life = BatteryReader.formatDuration((long) (whLeft / snapshot.avgPower * 3600000.0));
-            double screenAvg = screenOnAvgPower(snapshot.samples);
-            if (screenAvg > 0.1) {
-                snapshot.screenLife = BatteryReader.formatDuration((long) (whLeft / screenAvg * 3600000.0));
-            }
+            double screenAvg = Math.max(screenOnAvgPower(snapshot.samples), snapshot.avgPower);
+            snapshot.screenLife = BatteryReader.formatDuration((long) (whLeft / screenAvg * 3600000.0));
         }
         snapshot.usages = filteredAppUsage();
         return snapshot;
@@ -2441,16 +1969,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void addChartCard(LinearLayout content, String title, List<BatterySample> samples, int type, int height) {
-        LinearLayout card = card();
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.addView(text(chartTitle(type, title), 19, true, Color.rgb(70, 72, 76)), new LinearLayout.LayoutParams(-1, dp(42)));
-        ChartView chart = new ChartView(this);
-        chart.setData(samples, type);
-        card.addView(chart, new LinearLayout.LayoutParams(-1, height));
-        content.addView(card);
-    }
-
     private String chartTitle(int type, String fallback) {
         if (type == ChartView.TYPE_POWER_TIME) return "\u529f\u7387 / \u65f6\u95f4";
         if (type == ChartView.TYPE_LEVEL_TIME) return "\u7535\u91cf / \u65f6\u95f4";
@@ -2458,19 +1976,6 @@ public class MainActivity extends Activity {
         if (type == ChartView.TYPE_CURRENT_LEVEL) return "\u7535\u6d41 / \u7535\u91cf";
         if (type == ChartView.TYPE_USAGE) return "\u4f7f\u7528\u8fc7\u7a0b";
         return fallback;
-    }
-
-    private void addHintCard(LinearLayout content, String msg, String action, View.OnClickListener listener) {
-        LinearLayout card = card();
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(rounded(Color.rgb(228, 230, 233), dp(14)));
-        card.addView(text(msg, 16, false, Color.rgb(120, 123, 128)), new LinearLayout.LayoutParams(-1, dp(42)));
-        if (action != null) {
-            TextView link = text(action, 17, true, Color.rgb(22, 137, 216));
-            link.setOnClickListener(listener);
-            card.addView(link, new LinearLayout.LayoutParams(-1, dp(40)));
-        }
-        content.addView(card);
     }
 
     private TextView smallAction(String label, View.OnClickListener listener) {
@@ -2484,15 +1989,6 @@ public class MainActivity extends Activity {
             }
         });
         return view;
-    }
-
-    private LinearLayout metric(String value, String label) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setGravity(Gravity.CENTER);
-        box.addView(text(value, 20, false, Color.rgb(22, 137, 216)));
-        box.addView(text(label, 13, false, Color.rgb(145, 148, 153)));
-        return box;
     }
 
     private LinearLayout metric(TextView value, String label) {
@@ -2526,29 +2022,6 @@ public class MainActivity extends Activity {
         return card;
     }
 
-    private void animateCards(LinearLayout content) {
-        int animated = 0;
-        for (int i = 0; i < content.getChildCount(); i++) {
-            View child = content.getChildAt(i);
-            if (!(child instanceof LinearLayout)) {
-                continue;
-            }
-            child.setAlpha(0f);
-            child.setTranslationY(dp(10));
-            child.animate()
-                    .alpha(1f)
-                    .translationY(0)
-                    .setStartDelay(Math.min(120, animated * 22L))
-                    .setDuration(220)
-                    .setInterpolator(new DecelerateInterpolator(1.8f))
-                    .start();
-            animated++;
-            if (animated >= 8) {
-                break;
-            }
-        }
-    }
-
     private void press(View view) {
         view.animate().cancel();
         view.animate()
@@ -2573,26 +2046,6 @@ public class MainActivity extends Activity {
         view.setIncludeFontPadding(true);
         if (bold) view.setTypeface(Typeface.DEFAULT_BOLD);
         return view;
-    }
-
-    private Button button(String value) {
-        Button button = new Button(this);
-        button.setText(value);
-        button.setTextSize(16);
-        button.setTextColor(Color.rgb(22, 137, 216));
-        button.setAllCaps(false);
-        button.setBackground(rounded(Color.WHITE, dp(12)));
-        return button;
-    }
-
-    private boolean hasUsageAccess() {
-        try {
-            AppOpsManager appOps = (AppOpsManager) getSystemService(APP_OPS_SERVICE);
-            int mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), getPackageName());
-            return mode == AppOpsManager.MODE_ALLOWED;
-        } catch (Exception e) {
-            return false;
-        }
     }
 
     private double batteryCapacityAh() {

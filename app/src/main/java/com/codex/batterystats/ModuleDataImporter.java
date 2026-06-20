@@ -11,7 +11,7 @@ final class ModuleDataImporter {
 
     static boolean importRecent(StatsDatabase database) {
         long now = System.currentTimeMillis();
-        if (now - lastImportAt < 30000) {
+        if (now - lastImportAt < 3000) {
             return lastOk;
         }
         lastImportAt = now;
@@ -26,7 +26,7 @@ final class ModuleDataImporter {
             if (line.startsWith("time_ms") || line.trim().length() == 0) {
                 continue;
             }
-            String[] p = line.split(",", 8);
+            String[] p = line.split(",", 9);
             if (p.length < 7) {
                 continue;
             }
@@ -42,7 +42,13 @@ final class ModuleDataImporter {
                 sample.voltageV = Double.parseDouble(p[4].trim());
                 sample.powerW = Double.parseDouble(p[5].trim());
                 sample.tempC = Double.parseDouble(p[6].trim());
-                sample.foregroundPackage = p.length >= 8 ? p[7].trim() : "";
+                if (p.length >= 9) {
+                    sample.screenOn = "1".equals(p[7].trim());
+                    sample.foregroundPackage = p[8].trim();
+                } else {
+                    sample.foregroundPackage = p.length >= 8 ? p[7].trim() : "";
+                    sample.screenOn = sample.foregroundPackage != null && sample.foregroundPackage.length() > 0;
+                }
                 database.insert(sample);
                 imported++;
             } catch (Exception ignored) {

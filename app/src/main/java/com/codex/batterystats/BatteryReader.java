@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.BatteryManager;
+import android.os.PowerManager;
 import android.text.TextUtils;
 
 import java.io.BufferedReader;
@@ -32,6 +33,10 @@ final class BatteryReader {
         int scale = Math.max(1, battery.getIntExtra(BatteryManager.EXTRA_SCALE, 100));
         sample.level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, 0) * 100 / scale;
         sample.status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN);
+        int plugged = battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
+        if (plugged != 0 && sample.status != BatteryManager.BATTERY_STATUS_FULL) {
+            sample.status = BatteryManager.BATTERY_STATUS_CHARGING;
+        }
         sample.tempC = battery.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10.0;
 
         double voltageUv = readFirstPositive(
@@ -60,8 +65,18 @@ final class BatteryReader {
             sample.currentA = -sample.currentA;
         }
         sample.powerW = sample.voltageV * Math.abs(sample.currentA);
+        sample.screenOn = isScreenOn();
         sample.foregroundPackage = foregroundPackage();
         return sample;
+    }
+
+    private boolean isScreenOn() {
+        try {
+            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            return pm != null && pm.isInteractive();
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private String foregroundPackage() {
@@ -123,6 +138,9 @@ final class BatteryReader {
     private static double normalizeCurrent(double raw) {
         double abs = Math.abs(raw);
         if (abs > 100000) {
+            return raw / 1000000.0;
+        }
+        if (abs > 10000) {
             return raw / 1000000.0;
         }
         if (abs > 100) {

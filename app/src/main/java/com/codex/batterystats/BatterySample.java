@@ -8,6 +8,7 @@ final class BatterySample {
     double voltageV;
     double powerW;
     double tempC;
+    boolean screenOn;
     String foregroundPackage;
 
     boolean isCharging() {

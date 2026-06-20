@@ -32,17 +32,26 @@ norm_voltage() {
 }
 
 norm_current() {
-  awk -v v="$1" 'BEGIN { a=v; if (a < 0) a=-a; if (a > 100000) printf "%.6f", v/1000000; else if (a > 100) printf "%.6f", v/1000; else printf "%.6f", v; }'
+  awk -v v="$1" 'BEGIN { a=v; if (a < 0) a=-a; if (a > 100000) printf "%.6f", v/1000000; else if (a > 10000) printf "%.6f", v/1000000; else if (a > 100) printf "%.6f", v/1000; else printf "%.6f", v; }'
 }
 
 status_code() {
   s="$(read_node /sys/class/power_supply/battery/status)"
+  online="$(read_node /sys/class/power_supply/usb/online /sys/class/power_supply/ac/online /sys/class/power_supply/dc/online /sys/class/power_supply/wireless/online)"
+  charge_type="$(read_node /sys/class/power_supply/battery/charge_type)"
+  level="$(read_node /sys/class/power_supply/battery/capacity)"
   case "$s" in
     Charging) echo 2 ;;
     Discharging) echo 3 ;;
     Full) echo 5 ;;
     Not*) echo 4 ;;
-    *) echo 1 ;;
+    *)
+      if [ "$online" = "1" ] || [ "$charge_type" != "N/A" ] && [ "$charge_type" != "0" ]; then
+        if [ "${level:-0}" -ge 100 ]; then echo 5; else echo 2; fi
+      else
+        echo 3
+      fi
+      ;;
   esac
 }
 
@@ -215,7 +224,7 @@ write_app_usage() {
 }
 
 if [ ! -f "$CSV" ]; then
-  echo "time_ms,level,status,current_a,voltage_v,power_w,temp_c,pkg" > "$CSV"
+  echo "time_ms,level,status,current_a,voltage_v,power_w,temp_c,screen_on,pkg" > "$CSV"
 fi
 if [ ! -f "$APP_CSV" ]; then
   echo "time_ms,pkg,fg_ms,bg_ms,fg_wh,bg_wh,cpu_ticks" > "$APP_CSV"
@@ -252,20 +261,20 @@ while true; do
     cached_pkg_at="$now_s"
   fi
 
-  echo "$now_ms,$level,$status,$current,$voltage,$power,$temp,$cached_pkg" >> "$CSV"
-  if [ "$last_ms" != "0" ]; then
-    dt_ms=$((now_ms - last_ms))
-    if [ "$dt_ms" -gt 0 ] && [ "$last_status" = "3" ]; then
-      pending_wh="$(awk -v old="$pending_wh" -v p="$last_power" -v dt="$dt_ms" 'BEGIN { printf "%.8f", old + p*dt/3600000 }')"
-    fi
-  fi
-
   if screen_on; then
     is_screen_on=1
     cpu_interval=30000
   else
     is_screen_on=0
     cpu_interval=180000
+  fi
+
+  echo "$now_ms,$level,$status,$current,$voltage,$power,$temp,$is_screen_on,$cached_pkg" >> "$CSV"
+  if [ "$last_ms" != "0" ]; then
+    dt_ms=$((now_ms - last_ms))
+    if [ "$dt_ms" -gt 0 ] && [ "$last_status" = "3" ]; then
+      pending_wh="$(awk -v old="$pending_wh" -v p="$last_power" -v dt="$dt_ms" 'BEGIN { printf "%.8f", old + p*dt/3600000 }')"
+    fi
   fi
 
   if [ "$status" = "3" ] && [ $((now_ms - last_cpu_ms)) -ge "$cpu_interval" ]; then
@@ -286,8 +295,8 @@ while true; do
   trim_csv
 
   if [ "$status" = "2" ] || [ "$status" = "5" ]; then
-    if [ "$is_screen_on" = "1" ]; then sleep 10; else sleep 30; fi
+    if [ "$is_screen_on" = "1" ]; then sleep 5; else sleep 15; fi
   else
-    if [ "$is_screen_on" = "1" ]; then sleep 15; else sleep 60; fi
+    if [ "$is_screen_on" = "1" ]; then sleep 10; else sleep 30; fi
   fi
 done

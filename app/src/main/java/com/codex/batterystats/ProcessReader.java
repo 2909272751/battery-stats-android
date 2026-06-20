@@ -42,8 +42,8 @@ final class ProcessReader {
         if (out.length() == 0) {
             String probe = RootShell.run("id; echo PROC_COUNT=$(ls /proc/[0-9]* 2>/dev/null | wc -l); ps -A 2>/dev/null | head -n 3", 2500);
             lastError = RootShell.isAvailable()
-                    ? "Root ????? /proc ? ps ??????????: " + compact(probe)
-                    : "??? Root shell?";
+                    ? "Root 已授权，但 /proc 和 ps 都没有返回进程。诊断: " + compact(probe)
+                    : "未获得 Root shell。";
         }
         String[] lines = out.split("\\n");
         long totalTicks = 0;
@@ -109,7 +109,7 @@ final class ProcessReader {
         }
 
         if (processes.isEmpty() && out.length() > 0) {
-            lastError = appOnly ? "??? root ???????????????????????????" : "??? root ????????????";
+            lastError = appOnly ? "已读到 root 输出，但没有匹配到可见安卓应用；可切换为全部进程再试。" : "已读到 root 输出，但没有匹配到进程。";
         }
 
         LAST_TICKS.clear();

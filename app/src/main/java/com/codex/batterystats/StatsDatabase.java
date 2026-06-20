@@ -14,7 +14,7 @@ import java.util.Map;
 
 final class StatsDatabase extends SQLiteOpenHelper {
     private static final String DB_NAME = "battery_stats.db";
-    private static final int DB_VERSION = 2;
+    private static final int DB_VERSION = 3;
 
     StatsDatabase(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -30,6 +30,7 @@ final class StatsDatabase extends SQLiteOpenHelper {
                 + "voltage_v REAL,"
                 + "power_w REAL,"
                 + "temp_c REAL,"
+                + "screen_on INTEGER DEFAULT 0,"
                 + "pkg TEXT)");
         db.execSQL("CREATE INDEX idx_samples_status_time ON samples(status, time_ms)");
         createAppUsageTable(db);
@@ -39,6 +40,9 @@ final class StatsDatabase extends SQLiteOpenHelper {
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         if (oldVersion < 2) {
             createAppUsageTable(db);
+        }
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE samples ADD COLUMN screen_on INTEGER DEFAULT 0");
         }
     }
 
@@ -64,6 +68,7 @@ final class StatsDatabase extends SQLiteOpenHelper {
         values.put("voltage_v", sample.voltageV);
         values.put("power_w", sample.powerW);
         values.put("temp_c", sample.tempC);
+        values.put("screen_on", sample.screenOn ? 1 : 0);
         values.put("pkg", sample.foregroundPackage);
         getWritableDatabase().insertWithOnConflict("samples", null, values, SQLiteDatabase.CONFLICT_REPLACE);
         getWritableDatabase().delete("samples", "time_ms < ?", new String[]{String.valueOf(System.currentTimeMillis() - 1000L * 60 * 60 * 24 * 14)});
@@ -203,6 +208,8 @@ final class StatsDatabase extends SQLiteOpenHelper {
                 sample.voltageV = c.getDouble(c.getColumnIndexOrThrow("voltage_v"));
                 sample.powerW = c.getDouble(c.getColumnIndexOrThrow("power_w"));
                 sample.tempC = c.getDouble(c.getColumnIndexOrThrow("temp_c"));
+                int screenIndex = c.getColumnIndex("screen_on");
+                sample.screenOn = screenIndex >= 0 && c.getInt(screenIndex) != 0;
                 sample.foregroundPackage = c.getString(c.getColumnIndexOrThrow("pkg"));
                 out.add(sample);
             }
@@ -225,11 +232,11 @@ final class StatsDatabase extends SQLiteOpenHelper {
         long cpuTicks;
 
         String subtitle() {
-            return String.format(Locale.CHINA, "鍓嶅彴 %.3fWh  鍚庡彴 %.3fWh", foregroundWh, backgroundWh);
+            return String.format(Locale.CHINA, "\u524d\u53f0 %.3fWh  \u540e\u53f0 %.3fWh", foregroundWh, backgroundWh);
         }
 
         String detail() {
-            return String.format(Locale.CHINA, "AVG: %.2fW, 鍚庡彴: %s", avgPowerW, BatteryReader.formatDuration(backgroundMs));
+            return String.format(Locale.CHINA, "AVG: %.2fW, \u540e\u53f0 %s", avgPowerW, BatteryReader.formatDuration(backgroundMs));
         }
     }
 

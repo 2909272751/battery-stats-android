@@ -85,6 +85,7 @@ public class MainActivity extends Activity {
     private boolean pageSwitching;
     private int previewTargetPage = -1;
     private int lastPageForAnimation = -1;
+    private long lastLocalBatterySampleAt;
 
     private final Runnable refresher = new Runnable() {
         @Override
@@ -139,6 +140,18 @@ public class MainActivity extends Activity {
     private void ensurePermissions() {
     }
 
+    private void insertLocalBatterySampleIfNeeded() {
+        long now = System.currentTimeMillis();
+        if (now - lastLocalBatterySampleAt < 2000) {
+            return;
+        }
+        lastLocalBatterySampleAt = now;
+        try {
+            database.insert(new BatteryReader(this).read());
+        } catch (Exception ignored) {
+        }
+    }
+
     private void preferHighRefreshRate() {
         try {
             Window window = getWindow();
@@ -165,6 +178,7 @@ public class MainActivity extends Activity {
         final boolean samePage = renderedPage == page;
         final int restoreY = samePage && currentScroll != null ? currentScroll.getScrollY() : 0;
         boolean moduleOk = ModuleDataImporter.importRecent(database);
+        insertLocalBatterySampleIfNeeded();
         configureSystemBars();
         if (root == null) {
             root = new LinearLayout(this);
@@ -297,29 +311,29 @@ public class MainActivity extends Activity {
     }
 
     private String title() {
-        if (page == 1) return "????";
-        if (page == 2) return "????";
-        if (page == 3) return "????";
-        return "????";
+        if (page == 1) return "耗电统计";
+        if (page == 2) return "充电统计";
+        if (page == 3) return "进程信息";
+        return "电池统计";
     }
 
     private void addTabs() {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setPadding(dp(14), dp(4), dp(14), dp(6));
-        tabs.addView(tab("??", 0), new LinearLayout.LayoutParams(0, dp(42), 1));
-        tabs.addView(tab("??", 1), new LinearLayout.LayoutParams(0, dp(42), 1));
-        tabs.addView(tab("??", 2), new LinearLayout.LayoutParams(0, dp(42), 1));
-        tabs.addView(tab("??", 3), new LinearLayout.LayoutParams(0, dp(42), 1));
+        tabs.addView(tab("总览", 0), new LinearLayout.LayoutParams(0, dp(42), 1));
+        tabs.addView(tab("耗电", 1), new LinearLayout.LayoutParams(0, dp(42), 1));
+        tabs.addView(tab("充电", 2), new LinearLayout.LayoutParams(0, dp(42), 1));
+        tabs.addView(tab("进程", 3), new LinearLayout.LayoutParams(0, dp(42), 1));
         root.addView(tabs);
     }
 
     private void addTabsAt(int index) {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setPadding(dp(14), dp(4), dp(14), dp(6));
-        tabs.addView(tab("??", 0), new LinearLayout.LayoutParams(0, dp(42), 1));
-        tabs.addView(tab("??", 1), new LinearLayout.LayoutParams(0, dp(42), 1));
-        tabs.addView(tab("??", 2), new LinearLayout.LayoutParams(0, dp(42), 1));
-        tabs.addView(tab("??", 3), new LinearLayout.LayoutParams(0, dp(42), 1));
+        tabs.addView(tab("总览", 0), new LinearLayout.LayoutParams(0, dp(42), 1));
+        tabs.addView(tab("耗电", 1), new LinearLayout.LayoutParams(0, dp(42), 1));
+        tabs.addView(tab("充电", 2), new LinearLayout.LayoutParams(0, dp(42), 1));
+        tabs.addView(tab("进程", 3), new LinearLayout.LayoutParams(0, dp(42), 1));
         root.addView(tabs, index);
     }
 
@@ -560,8 +574,8 @@ public class MainActivity extends Activity {
     private void addProcessPreview(LinearLayout content) {
         LinearLayout card = card();
         card.setOrientation(LinearLayout.VERTICAL);
-        card.addView(text("????", 19, true, primaryTextColor()), new LinearLayout.LayoutParams(-1, dp(42)));
-        card.addView(text("?????????", 14, false, secondaryTextColor()), new LinearLayout.LayoutParams(-1, dp(38)));
+        card.addView(text("进程信息", 19, true, primaryTextColor()), new LinearLayout.LayoutParams(-1, dp(42)));
+        card.addView(text("松手后进入进程页面", 14, false, secondaryTextColor()), new LinearLayout.LayoutParams(-1, dp(38)));
         content.addView(card);
     }
 
@@ -573,12 +587,12 @@ public class MainActivity extends Activity {
         card.setOnClickListener(v -> switchPage(3));
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
-        texts.addView(text(running ? "???????" : "???????", 17, true, Color.rgb(64, 68, 72)));
-        texts.addView(text(running ? "????????????????????" : "??????????????????????", 13, false, Color.rgb(145, 148, 153)));
+        texts.addView(text(running ? "统计守护运行中" : "统计守护已暂停", 17, true, Color.rgb(64, 68, 72)));
+        texts.addView(text(running ? "需要兼容敏感应用时可临时关闭，无需重启。" : "关闭期间不会记录新统计，点击按钮可立即恢复。", 13, false, Color.rgb(145, 148, 153)));
         card.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView toggle = smallAction(running ? "??" : "??", v -> {
+        TextView toggle = smallAction(running ? "暂停" : "启动", v -> {
             boolean ok = RootShell.setStatsDaemonEnabled(!running);
-            Toast.makeText(this, ok ? (!running ? "???????" : "???????") : "???????? Root/????", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, ok ? (!running ? "已启动统计守护" : "已暂停统计守护") : "操作失败，请检查 Root/模块路径", Toast.LENGTH_SHORT).show();
             render();
         });
         card.addView(toggle, new LinearLayout.LayoutParams(dp(74), dp(42)));
@@ -598,8 +612,8 @@ public class MainActivity extends Activity {
         LinearLayout info = new LinearLayout(this);
         info.setOrientation(LinearLayout.VERTICAL);
         info.setPadding(dp(10), 0, 0, 0);
-        addProgressLine(info, "????", mem.memPercent, mem.usedMemText + " / " + mem.totalMemText);
-        addProgressLine(info, "????", mem.swapPercent, mem.usedSwapText + " / " + mem.totalSwapText);
+        addProgressLine(info, "物理内存", mem.memPercent, mem.usedMemText + " / " + mem.totalMemText);
+        addProgressLine(info, "交换分区", mem.swapPercent, mem.usedSwapText + " / " + mem.totalSwapText);
         info.addView(text("Used " + mem.memPercent + "%   Cached " + mem.cachedText, 10, false, Color.rgb(145, 148, 153)));
         card.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
         content.addView(card);
@@ -637,7 +651,7 @@ public class MainActivity extends Activity {
         info.setPadding(dp(16), 0, 0, 0);
         GpuInfo gpuInfo = readGpuInfo();
         info.addView(text(gpuInfo.freqText, 20, true, Color.rgb(52, 55, 58)));
-        info.addView(text("??: " + gpuInfo.loadText, 12, false, Color.rgb(120, 123, 128)));
+        info.addView(text("负载: " + gpuInfo.loadText, 12, false, Color.rgb(120, 123, 128)));
         info.addView(text(Build.HARDWARE + "  Android " + Build.VERSION.RELEASE, 12, false, Color.rgb(160, 163, 168)));
         card.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
         content.addView(card);
@@ -660,7 +674,7 @@ public class MainActivity extends Activity {
         cpu.setGravity(Gravity.CENTER);
         right.addView(cpu);
         right.addView(text(Build.HARDWARE, 13, true, Color.rgb(52, 55, 58)));
-        right.addView(text(String.format(Locale.CHINA, "??: %.0f%%", cpuLoad), 12, false, Color.rgb(145, 148, 153)));
+        right.addView(text(String.format(Locale.CHINA, "负载: %.0f%%", cpuLoad), 12, false, Color.rgb(145, 148, 153)));
         top.addView(right, new LinearLayout.LayoutParams(-1, dp(84)));
         card.addView(top);
 
@@ -701,8 +715,8 @@ public class MainActivity extends Activity {
         sys.setOrientation(LinearLayout.VERTICAL);
         sys.setOnClickListener(v -> switchPage(3));
         sys.addView(text("Android " + Build.VERSION.RELEASE, 16, false, Color.rgb(95, 99, 104)));
-        sys.addView(text("??? " + BatteryReader.formatDuration(android.os.SystemClock.elapsedRealtime()), 16, false, Color.rgb(95, 99, 104)));
-        sys.addView(text(moduleOk ? "?????" : "?????", 16, false, Color.rgb(22, 137, 216)));
+        sys.addView(text("已开机 " + BatteryReader.formatDuration(android.os.SystemClock.elapsedRealtime()), 16, false, Color.rgb(95, 99, 104)));
+        sys.addView(text(moduleOk ? "模块运行中" : "模块未读到", 16, false, Color.rgb(22, 137, 216)));
         row.addView(battery, homeCardLp(true));
         row.addView(sys, homeCardLp(false));
         content.addView(row);
@@ -818,7 +832,7 @@ public class MainActivity extends Activity {
 
     private String formatGpuFreq(String raw) {
         if (raw == null || raw.trim().length() == 0) {
-            return "GPU ?????";
+            return "GPU 频率不可读";
         }
         String first = raw.trim().split("\\s+")[0];
         try {
@@ -833,7 +847,7 @@ public class MainActivity extends Activity {
 
     private String formatGpuLoad(String raw) {
         if (raw == null || raw.trim().length() == 0) {
-            return "???";
+            return "不可读";
         }
         String[] parts = raw.trim().split("[\\s,/]+");
         try {
@@ -853,8 +867,8 @@ public class MainActivity extends Activity {
     }
 
     private static final class GpuInfo {
-        String freqText = "GPU ?????";
-        String loadText = "???";
+        String freqText = "GPU 频率不可读";
+        String loadText = "不可读";
     }
 
     private MemInfo readMemInfo() {
@@ -925,10 +939,10 @@ public class MainActivity extends Activity {
         List<BatterySample> samples = database.latestProcess(true);
         addStatusCard(content, database.latest());
         addProcessSummary(content, samples, true);
-        addChartCard(content, "?? / ??", samples, ChartView.TYPE_POWER_TIME, dp(260));
-        addChartCard(content, "?? / ??", samples, ChartView.TYPE_LEVEL_TIME, dp(260));
-        addChartCard(content, "?? / ??", samples, ChartView.TYPE_TEMP_TIME, dp(220));
-        addChartCard(content, "?? / ??", samples, ChartView.TYPE_CURRENT_LEVEL, dp(240));
+        addChartCard(content, "功率 / 时间", samples, ChartView.TYPE_POWER_TIME, dp(260));
+        addChartCard(content, "电量 / 时间", samples, ChartView.TYPE_LEVEL_TIME, dp(260));
+        addChartCard(content, "温度 / 时间", samples, ChartView.TYPE_TEMP_TIME, dp(220));
+        addChartCard(content, "电流 / 电量", samples, ChartView.TYPE_CURRENT_LEVEL, dp(240));
     }
 
     private void addDischargePage(LinearLayout content) {
@@ -944,7 +958,7 @@ public class MainActivity extends Activity {
         tools.setOrientation(LinearLayout.VERTICAL);
         EditText search = new EditText(this);
         search.setSingleLine(true);
-        search.setHint("?????");
+        search.setHint("搜索进程名");
         search.setText(processKeyword);
         search.setTextSize(15);
         search.setBackground(rounded(Color.rgb(247, 248, 249), dp(10)));
@@ -962,17 +976,17 @@ public class MainActivity extends Activity {
 
         LinearLayout filters = new LinearLayout(this);
         filters.setPadding(0, dp(10), 0, 0);
-        filters.addView(smallAction(processAppOnly ? "????" : "????", v -> {
+        filters.addView(smallAction(processAppOnly ? "安卓应用" : "全部进程", v -> {
             processKeyword = search.getText().toString();
             processAppOnly = !processAppOnly;
             render();
         }), new LinearLayout.LayoutParams(0, dp(40), 1));
-        filters.addView(smallAction(processAutoRefresh ? "????" : "????", v -> {
+        filters.addView(smallAction(processAutoRefresh ? "自动刷新" : "暂停刷新", v -> {
             processKeyword = search.getText().toString();
             processAutoRefresh = !processAutoRefresh;
             render();
         }), new LinearLayout.LayoutParams(0, dp(40), 1));
-        filters.addView(smallAction("??", v -> {
+        filters.addView(smallAction("刷新", v -> {
             processKeyword = search.getText().toString();
             requestProcessLoad(true);
             render();
@@ -987,7 +1001,7 @@ public class MainActivity extends Activity {
 
     private void appendProcessListViews(LinearLayout content) {
         if (processLoading && processCache.isEmpty()) {
-            addLoadingCard(content, "????????...");
+            addLoadingCard(content, "正在读取进程信息...");
         }
         addProcessList(content, filteredProcessList());
     }
@@ -1044,7 +1058,7 @@ public class MainActivity extends Activity {
         card.setOrientation(LinearLayout.VERTICAL);
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(text("??", 13, true, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(28), 2));
+        header.addView(text("进程", 13, true, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(28), 2));
         header.addView(text("PID", 12, true, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(28), 1));
         header.addView(sortHeader("RES", 1), new LinearLayout.LayoutParams(0, dp(28), 1));
         header.addView(sortHeader("CPU", 0), new LinearLayout.LayoutParams(0, dp(28), 1));
@@ -1054,7 +1068,7 @@ public class MainActivity extends Activity {
         if (count == 0) {
             String reason = ProcessReader.lastError();
             if (reason.length() == 0) {
-                reason = "???????????????????????";
+                reason = "没有读取到进程。可切换全部进程或点击刷新重试。";
             }
             card.addView(text(reason, 14, false, Color.rgb(145, 148, 153)));
         }
@@ -1105,7 +1119,7 @@ public class MainActivity extends Activity {
             startService(intent);
             return;
         }
-        Toast.makeText(this, "????????????", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "请允许显示在其他应用上层", Toast.LENGTH_SHORT).show();
         Intent settings = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:" + getPackageName()));
         startActivity(settings);
@@ -1143,7 +1157,7 @@ public class MainActivity extends Activity {
         metrics.setPadding(0, dp(12), 0, dp(4));
         TextView cpuValue = metricText("--", "CPU");
         TextView resValue = metricText("--", "RES");
-        TextView coresValue = metricText("--", "??");
+        TextView coresValue = metricText("--", "核心");
         metrics.addView(cpuValue, new LinearLayout.LayoutParams(0, dp(64), 1));
         metrics.addView(resValue, new LinearLayout.LayoutParams(0, dp(64), 1));
         metrics.addView(coresValue, new LinearLayout.LayoutParams(0, dp(64), 1));
@@ -1155,7 +1169,7 @@ public class MainActivity extends Activity {
         coreGrid.setOrientation(LinearLayout.VERTICAL);
         coreGrid.setPadding(0, dp(8), 0, 0);
         box.addView(coreGrid);
-        TextView detail = text("????...", 12, false, secondaryTextColor());
+        TextView detail = text("正在读取...", 12, false, secondaryTextColor());
         box.addView(detail, new LinearLayout.LayoutParams(-1, dp(30)));
 
         processDialog.setContentView(box);
@@ -1177,10 +1191,10 @@ public class MainActivity extends Activity {
                 cpuValue.setText(String.format(Locale.CHINA, "%.1f%%\nCPU", latest.cpuPercent));
                 resValue.setText(latest.resText() + "\nRES");
                 float[] coreLoads = readCoreLoads();
-                coresValue.setText(coreLoads.length + "\n??");
+                coresValue.setText(coreLoads.length + "\n核心");
                 bars.setValues(coreLoads);
                 renderCoreGrid(coreGrid, coreLoads);
-                detail.setText("?????????");
+                detail.setText("核心负载实时刷新中");
                 processDialogHandler.postDelayed(this, 1000);
             }
         };
@@ -1320,10 +1334,10 @@ public class MainActivity extends Activity {
         info.setOrientation(LinearLayout.VERTICAL);
         info.setPadding(dp(12), 0, 0, 0);
         if (latest == null) {
-            info.addView(text("????", 20, true, Color.rgb(70, 72, 76)));
-            info.addView(text("??????????", 14, false, Color.rgb(145, 148, 153)));
+            info.addView(text("等待采样", 20, true, Color.rgb(70, 72, 76)));
+            info.addView(text("模块启动后会自动记录", 14, false, Color.rgb(145, 148, 153)));
         } else {
-            info.addView(text(latest.isCharging() ? "???" : "???", 20, true, Color.rgb(70, 72, 76)));
+            info.addView(text(latest.isCharging() ? "\u5145\u7535\u4e2d" : "\u672a\u5145\u7535", 20, true, Color.rgb(70, 72, 76)));
             info.addView(text(String.format(Locale.CHINA, "%.2fW", latest.isCharging() ? latest.powerW : -latest.powerW), 16, false, Color.rgb(145, 148, 153)));
             info.addView(text(String.format(Locale.CHINA, "%.1fC    %.3fV", latest.tempC, latest.voltageV), 16, false, Color.rgb(145, 148, 153)));
             info.addView(text(String.format(Locale.CHINA, "%.0fmA", Math.abs(latest.currentA * 1000)), 16, false, Color.rgb(145, 148, 153)));
@@ -1362,7 +1376,7 @@ public class MainActivity extends Activity {
         card.setOrientation(LinearLayout.VERTICAL);
         LinearLayout head = new LinearLayout(this);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        head.addView(text("????", 18, true, Color.rgb(70, 72, 76)), new LinearLayout.LayoutParams(0, dp(36), 1));
+        head.addView(text("使用过程", 18, true, Color.rgb(70, 72, 76)), new LinearLayout.LayoutParams(0, dp(36), 1));
         head.addView(text(samples.isEmpty() ? "--" : samples.get(samples.size() - 1).level + "%", 18, false, Color.rgb(120, 123, 128)));
         card.addView(head);
         ChartView chart = new ChartView(this);
@@ -1374,7 +1388,7 @@ public class MainActivity extends Activity {
         foot.addView(text(latest == null ? "--Wh" : String.format(Locale.CHINA, "%.1fWh", latest.voltageV * batteryCapacityAh()), 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
         foot.addView(text(latest == null ? "--C" : String.format(Locale.CHINA, "%.1fC", latest.tempC), 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
         foot.addView(text(latest == null ? "--V" : String.format(Locale.CHINA, "%.3fV", latest.voltageV), 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
-        foot.addView(text(latest != null && latest.isCharging() ? "??" : "???", 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
+        foot.addView(text(latest != null && latest.isCharging() ? "充电" : "未充电", 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
         card.addView(foot);
         content.addView(card);
     }
@@ -1384,14 +1398,16 @@ public class MainActivity extends Activity {
         card.setOrientation(LinearLayout.HORIZONTAL);
         double avg = avgPower(samples);
         long used = duration(samples);
+        long screenUsed = screenOnDuration(samples);
         String life = "--";
         if (!samples.isEmpty() && avg > 0.1) {
             double whLeft = samples.get(samples.size() - 1).voltageV * batteryCapacityAh() * samples.get(samples.size() - 1).level / 100.0;
             life = BatteryReader.formatDuration((long) (whLeft / avg * 3600000.0));
         }
-        card.addView(metric(String.format(Locale.CHINA, "%.2fW", avg), "????"), new LinearLayout.LayoutParams(0, dp(76), 1));
-        card.addView(metric(BatteryReader.formatDuration(used), "???"), new LinearLayout.LayoutParams(0, dp(76), 1));
-        card.addView(metric(life, "????"), new LinearLayout.LayoutParams(0, dp(76), 1));
+        card.addView(metric(String.format(Locale.CHINA, "%.2fW", avg), "\u5e73\u5747\u529f\u8017"), new LinearLayout.LayoutParams(0, dp(76), 1));
+        card.addView(metric(BatteryReader.formatDuration(used), "\u5df2\u4f7f\u7528"), new LinearLayout.LayoutParams(0, dp(76), 1));
+        card.addView(metric(BatteryReader.formatDuration(screenUsed), "\u4eae\u5c4f"), new LinearLayout.LayoutParams(0, dp(76), 1));
+        card.addView(metric(life, "\u7406\u8bba\u7eed\u822a"), new LinearLayout.LayoutParams(0, dp(76), 1));
         content.addView(card);
     }
 
@@ -1401,25 +1417,25 @@ public class MainActivity extends Activity {
         LinearLayout titleRow = new LinearLayout(this);
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
         titleRow.addView(logoBadge(), new LinearLayout.LayoutParams(dp(38), dp(38)));
-        TextView cardTitle = text("????", 19, true, Color.rgb(70, 72, 76));
+        TextView cardTitle = text("\u4f7f\u7528\u573a\u666f", 19, true, Color.rgb(70, 72, 76));
         cardTitle.setPadding(dp(10), 0, 0, 0);
         titleRow.addView(cardTitle, new LinearLayout.LayoutParams(0, dp(44), 1));
-        titleRow.addView(smallAction(dischargeShowSystemApps ? "???" : "???", v -> {
+        titleRow.addView(smallAction(dischargeShowSystemApps ? "\u7cfb\u7edf\u5f00" : "\u7cfb\u7edf\u5173", v -> {
             dischargeShowSystemApps = !dischargeShowSystemApps;
             render();
         }), new LinearLayout.LayoutParams(dp(70), dp(38)));
         TextView sortButton = smallAction(sortName(), null);
         sortButton.setOnClickListener(v -> showDischargeSortMenu(sortButton));
         titleRow.addView(sortButton, new LinearLayout.LayoutParams(dp(78), dp(38)));
-        titleRow.addView(smallAction(dischargeSortAscending ? "??" : "??", v -> {
+        titleRow.addView(smallAction(dischargeSortAscending ? "\u6b63\u5e8f" : "\u5012\u5e8f", v -> {
             dischargeSortAscending = !dischargeSortAscending;
             render();
         }), new LinearLayout.LayoutParams(dp(64), dp(38)));
         card.addView(titleRow);
         List<StatsDatabase.AppUsage> usages = filteredAppUsage();
-        int count = Math.min(8, usages.size());
+        int count = usages.size();
         if (count == 0) {
-            card.addView(text("?????????????????????????????", 14, false, Color.rgb(145, 148, 153)));
+            card.addView(text("\u6682\u65e0\u5e94\u7528\u8017\u7535\u8bb0\u5f55\u3002\u6a21\u5757\u8fd0\u884c\u4e00\u6bb5\u65f6\u95f4\u540e\u4f1a\u663e\u793a\u524d\u53f0\u548c\u540e\u53f0\u8017\u7535\u3002", 14, false, Color.rgb(145, 148, 153)));
         }
         for (int i = 0; i < count; i++) {
             StatsDatabase.AppUsage usage = usages.get(i);
@@ -1440,14 +1456,14 @@ public class MainActivity extends Activity {
     }
 
     private String sortName() {
-        if (dischargeSortMode == 1) return "????";
-        return "????";
+        if (dischargeSortMode == 1) return "\u65f6\u957f\u6392\u5e8f";
+        return "\u8017\u7535\u6392\u5e8f";
     }
 
     private void showDischargeSortMenu(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
-        menu.getMenu().add(0, 0, 0, "????");
-        menu.getMenu().add(0, 1, 1, "????");
+        menu.getMenu().add(0, 0, 0, "\u8017\u7535\u6392\u5e8f");
+        menu.getMenu().add(0, 1, 1, "\u65f6\u957f\u6392\u5e8f");
         menu.setOnMenuItemClickListener(item -> {
             dischargeSortMode = item.getItemId();
             render();
@@ -1476,11 +1492,41 @@ public class MainActivity extends Activity {
     }
 
     private boolean isSystemPackage(String pkg) {
+        if (pkg == null || pkg.length() == 0) {
+            return true;
+        }
+        if (pkg.equals("android")
+                || pkg.startsWith("android.")
+                || pkg.startsWith("com.android.")
+                || pkg.startsWith("com.google.android.gms")
+                || pkg.startsWith("com.google.android.gsf")
+                || pkg.equals("com.google.android.packageinstaller")
+                || pkg.equals("com.google.android.permissioncontroller")
+                || pkg.equals("com.google.android.webview")
+                || pkg.startsWith("com.qualcomm.")
+                || pkg.startsWith("vendor.")
+                || pkg.startsWith("com.qti.")
+                || pkg.startsWith("com.mediatek.")
+                || pkg.startsWith("com.coloros.")
+                || pkg.startsWith("com.oplus.")
+                || pkg.startsWith("com.heytap.")
+                || pkg.startsWith("com.oneplus.")
+                || pkg.startsWith("com.realme.")
+                || pkg.startsWith("com.huawei.")
+                || pkg.startsWith("com.hihonor.")
+                || pkg.startsWith("com.xiaomi.")
+                || pkg.startsWith("com.miui.")
+                || pkg.startsWith("com.samsung.")
+                || pkg.startsWith("com.sec.")) {
+            return true;
+        }
         try {
             ApplicationInfo info = getPackageManager().getApplicationInfo(pkg, 0);
-            return (info.flags & (ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
+            boolean system = (info.flags & (ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
+            boolean launchable = getPackageManager().getLaunchIntentForPackage(pkg) != null;
+            return system || !launchable;
         } catch (Exception ignored) {
-            return false;
+            return true;
         }
     }
 
@@ -1597,14 +1643,67 @@ public class MainActivity extends Activity {
         for (int i = 1; i < samples.size(); i++) {
             BatterySample prev = samples.get(i - 1);
             BatterySample cur = samples.get(i);
-            total += prev.powerW * Math.max(0, cur.timeMs - prev.timeMs) / 3600000.0;
+            long dt = Math.max(0, cur.timeMs - prev.timeMs);
+            if (dt > 10 * 60 * 1000L) {
+                dt = 10 * 60 * 1000L;
+            }
+            total += sanePower(prev) * dt / 3600000.0;
         }
         return total;
     }
 
     private double avgPower(List<BatterySample> samples) {
         long d = duration(samples);
-        return d > 0 ? totalWh(samples) * 3600000.0 / d : 0;
+        if (d <= 0) {
+            return 0;
+        }
+        double integrated = totalWh(samples) * 3600000.0 / d;
+        double levelBased = levelBasedAvgPower(samples);
+        if (levelBased > 0 && integrated > levelBased * 2.5) {
+            return levelBased;
+        }
+        return Math.min(integrated, 25.0);
+    }
+
+    private double sanePower(BatterySample sample) {
+        if (sample == null || Double.isNaN(sample.powerW) || Double.isInfinite(sample.powerW)) {
+            return 0;
+        }
+        double power = Math.abs(sample.powerW);
+        double cap = sample.isCharging() ? 80.0 : 25.0;
+        return Math.max(0, Math.min(cap, power));
+    }
+
+    private double levelBasedAvgPower(List<BatterySample> samples) {
+        if (samples.size() < 2) {
+            return 0;
+        }
+        BatterySample first = samples.get(0);
+        BatterySample last = samples.get(samples.size() - 1);
+        int delta = first.level - last.level;
+        long d = duration(samples);
+        if (delta <= 0 || d < 20 * 60 * 1000L) {
+            return 0;
+        }
+        double avgVoltage = 0;
+        for (BatterySample sample : samples) {
+            avgVoltage += sample.voltageV;
+        }
+        avgVoltage = avgVoltage / samples.size();
+        double wh = batteryCapacityAh() * avgVoltage * delta / 100.0;
+        return wh * 3600000.0 / d;
+    }
+
+    private long screenOnDuration(List<BatterySample> samples) {
+        long total = 0;
+        for (int i = 1; i < samples.size(); i++) {
+            BatterySample prev = samples.get(i - 1);
+            BatterySample cur = samples.get(i);
+            if (prev.screenOn) {
+                total += Math.max(0, cur.timeMs - prev.timeMs);
+            }
+        }
+        return total;
     }
 
     private String formatClock(long timeMs) {

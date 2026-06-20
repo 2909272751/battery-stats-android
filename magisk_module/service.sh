@@ -8,11 +8,35 @@ PROC_REQ="$DATA_DIR/process_watch"
 PROC_TOP="$DATA_DIR/process_top.csv"
 PID="$DATA_DIR/daemon.pid"
 ENABLED="$DATA_DIR/enabled"
+REALTIME_REQ="$DATA_DIR/realtime_page"
+APP_PKG="com.codex.batterystats"
+GAUGE_DIR="/proc/oplus-votable/GAUGE_UPDATE"
+REALTIME_PID=""
+PROC_MON_PID=""
 
 mkdir -p "$DATA_DIR"
 [ -f "$ENABLED" ] || echo 1 > "$ENABLED"
 [ "$(cat "$ENABLED" 2>/dev/null)" = "0" ] && exit 0
 echo $$ > "$PID"
+
+set_gauge_update() {
+  [ -d "$GAUGE_DIR" ] || return 0
+  chmod 666 "$GAUGE_DIR/force_val" "$GAUGE_DIR/force_active" 2>/dev/null
+  if [ "$1" = "1" ]; then
+    echo 1000 > "$GAUGE_DIR/force_val" 2>/dev/null
+    echo 1 > "$GAUGE_DIR/force_active" 2>/dev/null
+  else
+    echo 0 > "$GAUGE_DIR/force_active" 2>/dev/null
+  fi
+}
+
+cleanup() {
+  set_gauge_update 0
+  [ -n "$REALTIME_PID" ] && kill "$REALTIME_PID" 2>/dev/null
+  [ -n "$PROC_MON_PID" ] && kill "$PROC_MON_PID" 2>/dev/null
+}
+
+trap cleanup EXIT TERM INT
 
 read_node() {
   for p in "$@"; do
@@ -68,6 +92,30 @@ foreground_pkg() {
 
 screen_on() {
   dumpsys power 2>/dev/null | grep -qE 'mWakefulness=Awake|Display Power: state=ON|mScreenOn=true'
+}
+
+realtime_page_requested() {
+  [ -f "$REALTIME_REQ" ] || return 1
+  flag="$(awk '{print $1; exit}' "$REALTIME_REQ" 2>/dev/null)"
+  [ "$flag" = "1" ]
+}
+
+realtime_gauge_manager() {
+  gauge_active=0
+  while true; do
+    [ "$(cat "$ENABLED" 2>/dev/null)" = "0" ] && break
+    need=0
+    if realtime_page_requested && screen_on; then
+      fg="$(foreground_pkg)"
+      [ "$fg" = "$APP_PKG" ] && need=1
+    fi
+    if [ "$need" != "$gauge_active" ]; then
+      set_gauge_update "$need"
+      gauge_active="$need"
+    fi
+    sleep 2
+  done
+  set_gauge_update 0
 }
 
 trim_csv() {
@@ -270,6 +318,9 @@ prev_cpu="$DATA_DIR/cpu_prev.tmp"
 next_cpu="$DATA_DIR/cpu_next.tmp"
 cpu_snapshot "$prev_cpu"
 process_monitor &
+PROC_MON_PID="$!"
+realtime_gauge_manager &
+REALTIME_PID="$!"
 
 while true; do
   [ "$(cat "$ENABLED" 2>/dev/null)" = "0" ] && exit 0

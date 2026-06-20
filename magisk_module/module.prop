@@ -1,6 +1,6 @@
 id=battery_stats
 name=电池统计
-version=2.0.0
-versionCode=20000
+version=2.0.1
+versionCode=20010
 author=Codex
 description=Root power statistics daemon. Collects low-frequency battery and app usage samples for the viewer app.

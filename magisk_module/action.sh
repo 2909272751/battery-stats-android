@@ -4,6 +4,8 @@ MODDIR=${0%/*}
 DATA_DIR=/data/adb/battery_stats
 PID="$DATA_DIR/daemon.pid"
 ENABLED="$DATA_DIR/enabled"
+REALTIME_REQ="$DATA_DIR/realtime_page"
+GAUGE_DIR="/proc/oplus-votable/GAUGE_UPDATE"
 
 mkdir -p "$DATA_DIR"
 
@@ -16,6 +18,10 @@ is_running() {
 
 stop_daemon() {
   echo 0 > "$ENABLED"
+  echo "0 $(date +%s)" > "$REALTIME_REQ"
+  if [ -d "$GAUGE_DIR" ]; then
+    echo 0 > "$GAUGE_DIR/force_active" 2>/dev/null
+  fi
   if is_running; then
     kill "$(cat "$PID")" 2>/dev/null
   fi

@@ -44,10 +44,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     private StatsDatabase database;
     private Handler handler;
+    private final ExecutorService overviewBatteryExecutor = Executors.newSingleThreadExecutor(r -> new Thread(r, "overview-battery"));
+    private final ExecutorService rootStateExecutor = Executors.newSingleThreadExecutor(r -> new Thread(r, "root-state"));
     private LinearLayout root;
     private LinearLayout topBar;
     private LinearLayout tabsBar;
@@ -100,8 +104,11 @@ public class MainActivity extends Activity {
     private ChargePageViews chargeViews;
     private DischargePageViews dischargeViews;
     private boolean overviewBatteryLoading;
+    private BatterySample overviewLiveBatterySample;
     private long lastOverviewTopProcessAt;
     private List<ProcessInfo> overviewTopProcessCache = new ArrayList<>();
+    private Boolean lastRealtimePageRequested;
+    private boolean appInForeground;
     private final Runnable scrollSettledRefresh = new Runnable() {
         @Override
         public void run() {
@@ -146,7 +153,7 @@ public class MainActivity extends Activity {
             if (page == 0 && overviewViews != null) {
                 requestOverviewBatterySnapshot();
             }
-            handler.postDelayed(this, 500);
+            handler.postDelayed(this, 1000);
         }
     };
 
@@ -165,14 +172,27 @@ public class MainActivity extends Activity {
         handler.removeCallbacks(refresher);
         handler.removeCallbacks(overviewBatteryRefresher);
         handler.postDelayed(refresher, 1000);
-        handler.postDelayed(overviewBatteryRefresher, 500);
+        handler.post(overviewBatteryRefresher);
+        appInForeground = true;
+        updateRealtimePageRequest(true);
     }
 
     @Override
     protected void onPause() {
         handler.removeCallbacks(refresher);
         handler.removeCallbacks(overviewBatteryRefresher);
+        appInForeground = false;
+        updateRealtimePageRequest(true);
         super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        overviewBatteryExecutor.shutdownNow();
+        appInForeground = false;
+        updateRealtimePageRequest(true);
+        rootStateExecutor.shutdownNow();
+        super.onDestroy();
     }
 
     @Override
@@ -241,6 +261,7 @@ public class MainActivity extends Activity {
                     updateTabs();
                     configureSystemBars();
                     updateCurrentScrollFromPager();
+                    updateRealtimePageRequest(false);
                     if (page == 3) {
                         requestProcessLoad(false);
                     } else if (page == 1) {
@@ -472,7 +493,17 @@ public class MainActivity extends Activity {
             return;
         }
         page = target;
+        updateRealtimePageRequest(false);
         render();
+    }
+
+    private void updateRealtimePageRequest(boolean force) {
+        boolean needed = appInForeground && (page == 0 || page == 1 || page == 2);
+        if (!force && lastRealtimePageRequested != null && lastRealtimePageRequested == needed) {
+            return;
+        }
+        lastRealtimePageRequested = needed;
+        rootStateExecutor.execute(() -> RootShell.setRealtimePageRequested(needed));
     }
 
     private void addOverviewPage(LinearLayout content, boolean moduleOk) {
@@ -1418,7 +1449,7 @@ public class MainActivity extends Activity {
         setTextIfChanged(overviewViews.cpuTemp, snapshot.cpuTemp);
         if (overviewViews.coreGrid != null) renderOverviewCoreGrid(overviewViews.coreGrid, snapshot.coreInfos);
         if (overviewViews.cpuTopList != null) renderOverviewTopProcesses(overviewViews.cpuTopList, snapshot.topProcesses);
-        BatterySample latest = snapshot.latest;
+        BatterySample latest = overviewLiveBatterySample == null ? snapshot.latest : overviewLiveBatterySample;
         applyOverviewBatterySample(latest);
         setTextIfChanged(overviewViews.uptime, "已开机 " + BatteryReader.formatDuration(android.os.SystemClock.elapsedRealtime()));
         setTextIfChanged(overviewViews.module, snapshot.moduleOk ? "模块运行中" : "模块未读到");
@@ -1432,25 +1463,28 @@ public class MainActivity extends Activity {
             return;
         }
         overviewBatteryLoading = true;
-        new Thread(() -> {
+        overviewBatteryExecutor.execute(() -> {
             BatterySample sample = null;
             try {
-                sample = new BatteryReader(this).read();
-                long now = System.currentTimeMillis();
-                if (now - lastLocalBatterySampleAt >= 2000) {
-                    lastLocalBatterySampleAt = now;
-                    database.insert(sample);
-                }
+                sample = new BatteryReader(this).readBatteryOnly();
             } catch (Exception ignored) {
             }
-            BatterySample result = sample == null ? database.latest() : sample;
+            BatterySample result = isUsableBatterySample(sample) ? sample
+                    : (overviewLiveBatterySample == null ? database.latest() : overviewLiveBatterySample);
             runOnUiThread(() -> {
                 overviewBatteryLoading = false;
                 if (page == 0 && overviewViews != null) {
+                    if (result != null) {
+                        overviewLiveBatterySample = result;
+                    }
                     applyOverviewBatterySample(result);
                 }
             });
-        }, "overview-battery").start();
+        });
+    }
+
+    private boolean isUsableBatterySample(BatterySample sample) {
+        return sample != null && (sample.voltageV > 0 || sample.level > 0 || sample.tempC > 0);
     }
 
     private void applyOverviewBatterySample(BatterySample latest) {

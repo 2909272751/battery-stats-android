@@ -71,4 +71,10 @@ final class RootShell {
         String out = run(cmd, 2000);
         return out.contains("running") || out.contains("started") || out.contains("stopped");
     }
+
+    static void setRealtimePageRequested(boolean enabled) {
+        String value = enabled ? "1" : "0";
+        run("mkdir -p /data/adb/battery_stats; "
+                + "echo '" + value + " '$(date +%s) > /data/adb/battery_stats/realtime_page", 1200);
+    }
 }

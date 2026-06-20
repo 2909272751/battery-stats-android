@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.BatteryManager;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.text.TextUtils;
 
 import java.io.BufferedReader;
@@ -15,6 +16,10 @@ import java.io.FileReader;
 import java.util.Locale;
 
 final class BatteryReader {
+    private static final Object CHARGE_COUNTER_LOCK = new Object();
+    private static double lastChargeCounterUah;
+    private static long lastChargeCounterAt;
+
     private final Context context;
     private String cachedForeground = "";
     private long cachedForegroundAt = 0;
@@ -24,6 +29,14 @@ final class BatteryReader {
     }
 
     BatterySample read() {
+        return read(true, false);
+    }
+
+    BatterySample readBatteryOnly() {
+        return read(false, true);
+    }
+
+    private BatterySample read(boolean includeForeground, boolean preferCounterDelta) {
         Intent battery = context.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         BatterySample sample = new BatterySample();
         sample.timeMs = System.currentTimeMillis();
@@ -47,27 +60,116 @@ final class BatteryReader {
         }
         sample.voltageV = normalizeVoltage(voltageUv);
 
+        BatteryManager manager = (BatteryManager) context.getSystemService(Context.BATTERY_SERVICE);
         double currentUa = readFirstNonZero(
                 "/sys/class/power_supply/battery/current_now",
+                "/sys/class/power_supply/battery/current_avg",
                 "/sys/class/power_supply/bms/current_now",
+                "/sys/class/power_supply/bms/current_avg",
                 "/sys/class/power_supply/maxfg/current_now");
         if (currentUa == 0) {
-            BatteryManager manager = (BatteryManager) context.getSystemService(Context.BATTERY_SERVICE);
             if (manager != null) {
                 currentUa = manager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
             }
         }
         sample.currentA = normalizeCurrent(currentUa);
+        double counterCurrentA = chargeCounterCurrentA(manager);
+        if (preferCounterDelta && Math.abs(counterCurrentA) >= 0.02) {
+            sample.currentA = counterCurrentA;
+        }
         if (sample.isCharging() && sample.currentA < 0) {
             sample.currentA = -sample.currentA;
         }
         if (!sample.isCharging() && sample.currentA > 0) {
             sample.currentA = -sample.currentA;
         }
-        sample.powerW = clampPower(sample.voltageV * Math.abs(sample.currentA), sample.isCharging());
+        double directPowerW = readDirectPowerW();
+        double powerW = sample.voltageV * Math.abs(sample.currentA);
+        if (preferCounterDelta && directPowerW > 0 && (powerW <= 0 || Math.abs(counterCurrentA) < 0.02)) {
+            powerW = directPowerW;
+        }
+        sample.powerW = clampPower(powerW, sample.isCharging());
         sample.screenOn = isScreenOn();
-        sample.foregroundPackage = foregroundPackage();
+        sample.foregroundPackage = includeForeground ? foregroundPackage() : "";
         return sample;
+    }
+
+    private static double chargeCounterCurrentA(BatteryManager manager) {
+        double counterUah = readFirstNonZero(
+                "/sys/class/power_supply/battery/charge_counter",
+                "/sys/class/power_supply/bms/charge_counter",
+                "/sys/class/power_supply/maxfg/charge_counter");
+        if (counterUah == 0 && manager != null) {
+            long value = manager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER);
+            if (value != Long.MIN_VALUE && value != 0) {
+                counterUah = value;
+            }
+        }
+        if (Math.abs(counterUah) < 1) {
+            return 0;
+        }
+        long now = SystemClock.elapsedRealtime();
+        synchronized (CHARGE_COUNTER_LOCK) {
+            if (lastChargeCounterUah == 0 || lastChargeCounterAt == 0) {
+                lastChargeCounterUah = counterUah;
+                lastChargeCounterAt = now;
+                return 0;
+            }
+            double delta = counterUah - lastChargeCounterUah;
+            long dtMs = now - lastChargeCounterAt;
+            if (dtMs < 700 || dtMs > 20000 || Math.abs(delta) < 1) {
+                if (dtMs > 20000) {
+                    lastChargeCounterUah = counterUah;
+                    lastChargeCounterAt = now;
+                }
+                return 0;
+            }
+            double currentA = normalizeCounterDeltaCurrent(delta, dtMs);
+            lastChargeCounterUah = counterUah;
+            lastChargeCounterAt = now;
+            return currentA;
+        }
+    }
+
+    private static double normalizeCounterDeltaCurrent(double delta, long dtMs) {
+        double perHour = delta * 3600000.0 / dtMs;
+        double sign = perHour < 0 ? -1.0 : 1.0;
+        double abs = Math.abs(perHour);
+        double[] candidates = new double[]{
+                abs / 1000000.0,
+                abs / 1000000000.0,
+                abs / 1000.0,
+                abs
+        };
+        for (double candidate : candidates) {
+            if (candidate >= 0.01 && candidate <= 20.0) {
+                return sign * candidate;
+            }
+        }
+        return 0;
+    }
+
+    private static double readDirectPowerW() {
+        double raw = readFirstNonZero(
+                "/sys/class/power_supply/battery/power_now",
+                "/sys/class/power_supply/bms/power_now",
+                "/sys/class/power_supply/maxfg/power_now");
+        if (raw == 0) {
+            return 0;
+        }
+        double abs = Math.abs(raw);
+        double[] candidates = new double[]{
+                abs / 1000000.0,
+                abs / 1000000000.0,
+                abs / 1000.0,
+                abs
+        };
+        for (double candidate : candidates) {
+            if (candidate >= 0.01 && candidate <= 100.0) {
+                return candidate;
+            }
+        }
+        return 0;
     }
 
     private boolean isScreenOn() {

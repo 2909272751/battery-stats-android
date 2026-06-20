@@ -256,6 +256,7 @@ public class MainActivity extends Activity {
             pageView = content;
         } else {
             scroll = new ScrollView(this);
+            installSwipeNavigation(scroll);
             if (assignCurrentScroll) currentScroll = scroll;
             scroll.addView(content);
             pageView = scroll;
@@ -512,8 +513,8 @@ public class MainActivity extends Activity {
         if (page == 3 && processSearchFocused) return false;
         if (pageSwitching) return true;
         if (event.getAction() == MotionEvent.ACTION_DOWN) {
-            swipeDownX = event.getX();
-            swipeDownY = event.getY();
+            swipeDownX = event.getRawX();
+            swipeDownY = event.getRawY();
             swipeHorizontal = false;
             if (currentPageView != null) {
                 currentPageView.animate().cancel();
@@ -521,10 +522,16 @@ public class MainActivity extends Activity {
             return true;
         }
         if (event.getAction() == MotionEvent.ACTION_MOVE) {
-            float dx = event.getX() - swipeDownX;
-            float dy = event.getY() - swipeDownY;
+            float dx = event.getRawX() - swipeDownX;
+            float dy = event.getRawY() - swipeDownY;
             if (!swipeHorizontal && Math.abs(dx) > dp(10) && Math.abs(dx) > Math.abs(dy) * 1.25f) {
                 swipeHorizontal = true;
+                if (currentScroll != null) {
+                    currentScroll.requestDisallowInterceptTouchEvent(true);
+                }
+                if (contentHost != null) {
+                    contentHost.requestDisallowInterceptTouchEvent(true);
+                }
             }
             if (swipeHorizontal && contentHost != null && currentPageView != null) {
                 int target = swipeTargetForDelta(dx);
@@ -546,8 +553,8 @@ public class MainActivity extends Activity {
             return true;
         }
         if (event.getAction() == MotionEvent.ACTION_UP) {
-            float dx = event.getX() - swipeDownX;
-            float dy = event.getY() - swipeDownY;
+            float dx = event.getRawX() - swipeDownX;
+            float dy = event.getRawY() - swipeDownY;
             if (Math.abs(dx) > dp(70) && Math.abs(dx) > Math.abs(dy) * 1.6f) {
                 int target = swipeTargetForDelta(dx);
                 if (target >= 0) {
@@ -580,16 +587,17 @@ public class MainActivity extends Activity {
             if (processDialog != null && processDialog.isShowing()) return false;
             if (page == 3 && processSearchFocused) return false;
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                swipeDownX = event.getX();
-                swipeDownY = event.getY();
+                swipeDownX = event.getRawX();
+                swipeDownY = event.getRawY();
                 swipeHorizontal = false;
                 return false;
             }
             if (event.getAction() == MotionEvent.ACTION_MOVE) {
-                float dx = event.getX() - swipeDownX;
-                float dy = event.getY() - swipeDownY;
+                float dx = event.getRawX() - swipeDownX;
+                float dy = event.getRawY() - swipeDownY;
                 if (Math.abs(dx) > dp(10) && Math.abs(dx) > Math.abs(dy) * 1.25f) {
                     swipeHorizontal = true;
+                    requestDisallowInterceptTouchEvent(true);
                     return true;
                 }
             }
@@ -1029,7 +1037,7 @@ public class MainActivity extends Activity {
         filters.addView(smallAction("刷新", v -> {
             processKeyword = search.getText().toString();
             requestProcessLoad(true);
-            render();
+            refreshProcessListOnly();
         }), new LinearLayout.LayoutParams(0, dp(40), 1));
         tools.addView(filters);
         content.addView(tools);

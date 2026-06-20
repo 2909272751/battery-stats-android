@@ -70,6 +70,7 @@ public class MainActivity extends Activity {
     private LinearLayout processListParent;
     private LinearLayout processListCard;
     private int processListStartIndex;
+    private int processVisibleLimit = 20;
     private int dischargeSortMode = 0;
     private boolean dischargeShowSystemApps;
     private boolean dischargeSortAscending;
@@ -1016,6 +1017,7 @@ public class MainActivity extends Activity {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
                 processKeyword = s.toString();
+                processVisibleLimit = 20;
                 refreshProcessListOnly();
             }
             @Override public void afterTextChanged(Editable s) { }
@@ -1024,17 +1026,18 @@ public class MainActivity extends Activity {
 
         LinearLayout filters = new LinearLayout(this);
         filters.setPadding(0, dp(10), 0, 0);
-        filters.addView(smallAction(processAppOnly ? "安卓应用" : "全部进程", v -> {
+        filters.addView(smallAction(processAppOnly ? "\u5b89\u5353\u5e94\u7528" : "\u5168\u90e8\u8fdb\u7a0b", v -> {
             processKeyword = search.getText().toString();
             processAppOnly = !processAppOnly;
+            processVisibleLimit = 20;
             render();
         }), new LinearLayout.LayoutParams(0, dp(40), 1));
-        filters.addView(smallAction(processAutoRefresh ? "自动刷新" : "暂停刷新", v -> {
+        filters.addView(smallAction(processAutoRefresh ? "\u81ea\u52a8\u5237\u65b0" : "\u6682\u505c\u5237\u65b0", v -> {
             processKeyword = search.getText().toString();
             processAutoRefresh = !processAutoRefresh;
             render();
         }), new LinearLayout.LayoutParams(0, dp(40), 1));
-        filters.addView(smallAction("刷新", v -> {
+        filters.addView(smallAction("\u5237\u65b0", v -> {
             processKeyword = search.getText().toString();
             requestProcessLoad(true);
             refreshProcessListOnly();
@@ -1125,13 +1128,13 @@ public class MainActivity extends Activity {
         card.setOrientation(LinearLayout.VERTICAL);
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(text("进程", 13, true, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(28), 2));
+        header.addView(text("\u8fdb\u7a0b", 13, true, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(28), 2));
         header.addView(text("PID", 12, true, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(28), 1));
         header.addView(sortHeader("RES", 1), new LinearLayout.LayoutParams(0, dp(28), 1));
         header.addView(sortHeader("CPU", 0), new LinearLayout.LayoutParams(0, dp(28), 1));
         card.addView(header);
 
-        int count = list.size();
+        int count = Math.min(processVisibleLimit, list.size());
         if (count == 0) {
             String reason = ProcessReader.lastError();
             if (reason.length() == 0) {
@@ -1157,6 +1160,15 @@ public class MainActivity extends Activity {
             row.addView(text(info.resText(), 12, false, Color.rgb(110, 114, 118)), new LinearLayout.LayoutParams(0, dp(54), 1));
             row.addView(text(String.format(Locale.CHINA, "%.1f%%", info.cpuPercent), 12, false, Color.rgb(95, 99, 104)), new LinearLayout.LayoutParams(0, dp(54), 1));
             card.addView(row);
+        }
+        if (count < list.size()) {
+            TextView more = smallAction(String.format(Locale.CHINA, "\u663e\u793a\u66f4\u591a  %d/%d", count, list.size()), v -> {
+                processVisibleLimit += 20;
+                refreshProcessListOnly();
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(42));
+            lp.setMargins(0, dp(6), 0, 0);
+            card.addView(more, lp);
         }
     }
 
@@ -1367,8 +1379,10 @@ public class MainActivity extends Activity {
         ArrayList<ProcessInfo> out = new ArrayList<>();
         String q = processKeyword == null ? "" : processKeyword.trim().toLowerCase(Locale.US);
         for (ProcessInfo info : processCache) {
-            if (processAppOnly && !info.installedApp) {
-                continue;
+            if (processAppOnly) {
+                if (!info.installedApp || info.systemApp || isSystemPackage(info.packageName)) {
+                    continue;
+                }
             }
             String label = ProcessReader.label(this, info.packageName).toLowerCase(Locale.US);
             if (q.length() > 0
@@ -1583,8 +1597,24 @@ public class MainActivity extends Activity {
                 || pkg.startsWith("com.hihonor.")
                 || pkg.startsWith("com.xiaomi.")
                 || pkg.startsWith("com.miui.")
+                || pkg.startsWith("com.vivo.")
+                || pkg.startsWith("com.iqoo.")
+                || pkg.startsWith("com.bbk.")
+                || pkg.startsWith("com.lenovo.")
+                || pkg.startsWith("com.motorola.")
                 || pkg.startsWith("com.samsung.")
-                || pkg.startsWith("com.sec.")) {
+                || pkg.startsWith("com.sec.")
+                || pkg.startsWith("com.sonyericsson.")
+                || pkg.startsWith("com.sonymobile.")
+                || pkg.startsWith("com.nvidia.")
+                || pkg.startsWith("com.lge.")
+                || pkg.startsWith("com.htc.")
+                || pkg.startsWith("org.codeaurora.")
+                || pkg.contains(".ims")
+                || pkg.contains(".telephony")
+                || pkg.contains(".carrier")
+                || pkg.contains(".provider")
+                || pkg.contains(".service")) {
             return true;
         }
         try {

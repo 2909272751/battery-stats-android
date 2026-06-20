@@ -5,7 +5,9 @@ $module = Join-Path $root "magisk_module"
 $dist = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
-$zip = Join-Path $dist "battery-stats-magisk-module.zip"
+$versionLine = Select-String -Path (Join-Path $module "module.prop") -Pattern '^version=(.+)$' | Select-Object -First 1
+$version = if ($versionLine) { $versionLine.Matches[0].Groups[1].Value.Trim() } else { "dev" }
+$zip = Join-Path $dist "battery-stats-v$version-magisk-module.zip"
 if (Test-Path $zip) {
     Remove-Item -LiteralPath $zip -Force
 }

@@ -40,7 +40,9 @@ if ($LASTEXITCODE -ne 0) {
 $apk = Join-Path $root "app\build\outputs\apk\release\app-release.apk"
 $dist = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
-$finalApk = Join-Path $dist "battery-stats-release-signed.apk"
+$version = Select-String -Path (Join-Path $root "app\build.gradle") -Pattern 'versionName\s+"([^"]+)"' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 1
+if (-not $version) { $version = "dev" }
+$finalApk = Join-Path $dist "battery-stats-v$version-release-signed.apk"
 if (Test-Path $apk) {
     Copy-Item -LiteralPath $apk -Destination $finalApk -Force
     Write-Host "APK generated: $finalApk" -ForegroundColor Green

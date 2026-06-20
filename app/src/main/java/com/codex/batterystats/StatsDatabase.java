@@ -232,7 +232,9 @@ final class StatsDatabase extends SQLiteOpenHelper {
         long cpuTicks;
 
         String subtitle() {
-            return String.format(Locale.CHINA, "\u524d\u53f0 %.3fWh  \u540e\u53f0 %.3fWh", foregroundWh, backgroundWh);
+            double foregroundW = foregroundMs > 0 ? foregroundWh * 3600000.0 / foregroundMs : 0;
+            double backgroundW = backgroundMs > 0 ? backgroundWh * 3600000.0 / backgroundMs : 0;
+            return String.format(Locale.CHINA, "\u524d\u53f0 %.2fW  \u540e\u53f0 %.2fW", foregroundW, backgroundW);
         }
 
         String detail() {

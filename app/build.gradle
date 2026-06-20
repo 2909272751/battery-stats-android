@@ -12,31 +12,12 @@ android {
     namespace "com.codex.batterystats"
     compileSdk 35
 
-    buildFeatures {
-        buildConfig true
-    }
-
     defaultConfig {
         applicationId "com.codex.batterystats"
         minSdk 23
         targetSdk 35
-        versionCode 11
-        versionName "1.0.10"
-    }
-
-    flavorDimensions "ui"
-    productFlavors {
-        classic {
-            dimension "ui"
-            buildConfigField "boolean", "MATERIAL_UI", "false"
-        }
-        material {
-            dimension "ui"
-            applicationIdSuffix ".material"
-            versionNameSuffix "-material"
-            resValue "string", "app_name", "电池统计 Material"
-            buildConfigField "boolean", "MATERIAL_UI", "true"
-        }
+        versionCode 12
+        versionName "1.0.11"
     }
 
     signingConfigs {
@@ -60,5 +41,4 @@ android {
 
 dependencies {
     implementation "androidx.viewpager2:viewpager2:1.1.0"
-    implementation "com.google.android.material:material:1.12.0"
 }

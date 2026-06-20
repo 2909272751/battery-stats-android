@@ -28,6 +28,7 @@ import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
@@ -38,8 +39,6 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.viewpager2.widget.ViewPager2;
-
-import com.google.android.material.button.MaterialButton;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
@@ -96,12 +95,12 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             boolean processAtTop = currentScroll == null || currentScroll.getScrollY() < dp(12);
-            if (page == 0) {
-                render();
+            if (page == 0 || page == 1 || page == 2) {
+                refreshCurrentPage();
             } else if (page == 3 && processAutoRefresh && !processSearchFocused) {
                 requestProcessLoad(false);
             }
-            handler.postDelayed(this, page == 3 && processAutoRefresh && !processSearchFocused && processAtTop ? 1000 : 5000);
+            handler.postDelayed(this, page == 3 && processAutoRefresh && !processSearchFocused && processAtTop ? 1000 : 2000);
         }
     };
 
@@ -119,7 +118,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         handler.removeCallbacks(refresher);
-        handler.postDelayed(refresher, 5000);
+        handler.postDelayed(refresher, 1000);
     }
 
     @Override
@@ -208,6 +207,8 @@ public class MainActivity extends Activity {
                     updateCurrentScrollFromPager();
                     if (page == 3) {
                         requestProcessLoad(false);
+                    } else {
+                        handler.postDelayed(() -> refreshCurrentPage(), 120);
                     }
                 }
             });
@@ -224,6 +225,16 @@ public class MainActivity extends Activity {
             }
         }
         updateCurrentScrollFromPager();
+    }
+
+    private void refreshCurrentPage() {
+        moduleOkCached = ModuleDataImporter.importRecent(database);
+        insertLocalBatterySampleIfNeeded();
+        if (pagerAdapter != null) {
+            pagerAdapter.notifyItemChanged(page);
+        } else {
+            render();
+        }
     }
 
     private void updateCurrentScrollFromPager() {
@@ -288,15 +299,21 @@ public class MainActivity extends Activity {
         @NonNull
         @Override
         public PageHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            View view = buildPageView(viewType, false, moduleOkCached, 0);
-            view.setLayoutParams(new RecyclerView.LayoutParams(
+            FrameLayout container = new FrameLayout(MainActivity.this);
+            container.setLayoutParams(new RecyclerView.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT));
-            return new PageHolder(view);
+            return new PageHolder(container);
         }
 
         @Override
         public void onBindViewHolder(@NonNull PageHolder holder, int position) {
+            int restoreY = position == page && currentScroll != null ? currentScroll.getScrollY() : 0;
+            holder.container.removeAllViews();
+            View view = buildPageView(position, position == page, moduleOkCached, restoreY);
+            holder.container.addView(view, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
         }
 
         @Override
@@ -311,8 +328,11 @@ public class MainActivity extends Activity {
     }
 
     private static final class PageHolder extends RecyclerView.ViewHolder {
-        PageHolder(@NonNull View itemView) {
+        final FrameLayout container;
+
+        PageHolder(@NonNull FrameLayout itemView) {
             super(itemView);
+            container = itemView;
         }
     }
 
@@ -371,7 +391,7 @@ public class MainActivity extends Activity {
     }
 
     private TextView tab(String label, int target) {
-        TextView view = BuildConfig.MATERIAL_UI ? materialAction(tabLabel(target), 15) : text(tabLabel(target), 15, true, target == page ? Color.WHITE : primaryTextColor());
+        TextView view = text(tabLabel(target), 15, true, target == page ? Color.WHITE : primaryTextColor());
         view.setGravity(Gravity.CENTER);
         view.setOnClickListener(v -> {
             press(v);
@@ -396,13 +416,7 @@ public class MainActivity extends Activity {
             tab.animate().cancel();
             tab.setText(tabLabel(i));
             tab.setTextColor(selected ? Color.WHITE : primaryTextColor());
-            if (tab instanceof MaterialButton) {
-                MaterialButton button = (MaterialButton) tab;
-                button.setCornerRadius(dp(14));
-                button.setBackgroundColor(selected ? accentColor() : chipColor());
-            } else {
-                tab.setBackground(rounded(selected ? accentColor() : chipColor(), dp(12)));
-            }
+            tab.setBackground(rounded(selected ? accentColor() : chipColor(), dp(12)));
             tab.setAlpha(selected ? 1f : 0.92f);
         }
     }
@@ -1293,7 +1307,7 @@ public class MainActivity extends Activity {
             BatterySample last = samples.get(samples.size() - 1);
             time = formatClock(first.timeMs) + " ~ " + formatClock(last.timeMs);
             delta = (charging ? "+" : "") + (last.level - first.level) + "%";
-            energy = String.format(Locale.CHINA, "%+.2fWh", totalWh(samples));
+            energy = String.format(Locale.CHINA, "%.2fW", avgPower(samples));
         }
         card.addView(text(time, 15, false, Color.rgb(120, 123, 128)), new LinearLayout.LayoutParams(0, dp(48), 2));
         card.addView(text(BatteryReader.formatDuration(duration(samples)), 15, false, Color.rgb(120, 123, 128)), new LinearLayout.LayoutParams(0, dp(48), 1));
@@ -1316,7 +1330,7 @@ public class MainActivity extends Activity {
         LinearLayout foot = new LinearLayout(this);
         foot.setPadding(0, dp(8), 0, 0);
         BatterySample latest = samples.isEmpty() ? database.latest() : samples.get(samples.size() - 1);
-        foot.addView(text(latest == null ? "--Wh" : String.format(Locale.CHINA, "%.1fWh", latest.voltageV * batteryCapacityAh()), 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
+        foot.addView(text(latest == null ? "--W" : String.format(Locale.CHINA, "%.2fW", sanePower(latest)), 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
         foot.addView(text(latest == null ? "--C" : String.format(Locale.CHINA, "%.1fC", latest.tempC), 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
         foot.addView(text(latest == null ? "--V" : String.format(Locale.CHINA, "%.3fV", latest.voltageV), 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
         foot.addView(text(latest != null && latest.isCharging() ? "充电" : "未充电", 14, false, Color.rgb(130, 134, 138)), new LinearLayout.LayoutParams(0, dp(36), 1));
@@ -1331,14 +1345,20 @@ public class MainActivity extends Activity {
         long used = duration(samples);
         long screenUsed = screenOnDuration(samples);
         String life = "--";
+        String screenLife = "--";
         if (!samples.isEmpty() && avg > 0.1) {
             double whLeft = samples.get(samples.size() - 1).voltageV * batteryCapacityAh() * samples.get(samples.size() - 1).level / 100.0;
             life = BatteryReader.formatDuration((long) (whLeft / avg * 3600000.0));
+            double screenAvg = screenOnAvgPower(samples);
+            if (screenAvg > 0.1) {
+                screenLife = BatteryReader.formatDuration((long) (whLeft / screenAvg * 3600000.0));
+            }
         }
         card.addView(metric(String.format(Locale.CHINA, "%.2fW", avg), "\u5e73\u5747\u529f\u8017"), new LinearLayout.LayoutParams(0, dp(76), 1));
         card.addView(metric(BatteryReader.formatDuration(used), "\u5df2\u4f7f\u7528"), new LinearLayout.LayoutParams(0, dp(76), 1));
         card.addView(metric(BatteryReader.formatDuration(screenUsed), "\u4eae\u5c4f"), new LinearLayout.LayoutParams(0, dp(76), 1));
         card.addView(metric(life, "\u7406\u8bba\u7eed\u822a"), new LinearLayout.LayoutParams(0, dp(76), 1));
+        card.addView(metric(screenLife, "\u4eae\u5c4f\u7eed\u822a"), new LinearLayout.LayoutParams(0, dp(76), 1));
         content.addView(card);
     }
 
@@ -1536,15 +1556,9 @@ public class MainActivity extends Activity {
     }
 
     private TextView smallAction(String label, View.OnClickListener listener) {
-        TextView view = BuildConfig.MATERIAL_UI ? materialAction(label, 13) : text(label, 13, true, accentColor());
+        TextView view = text(label, 13, true, accentColor());
         view.setGravity(Gravity.CENTER);
-        if (view instanceof MaterialButton) {
-            MaterialButton button = (MaterialButton) view;
-            button.setCornerRadius(dp(12));
-            button.setBackgroundColor(chipColor());
-        } else {
-            view.setBackground(rounded(chipColor(), dp(10)));
-        }
+        view.setBackground(rounded(chipColor(), dp(10)));
         view.setOnClickListener(v -> {
             press(v);
             if (listener != null) {
@@ -1554,27 +1568,11 @@ public class MainActivity extends Activity {
         return view;
     }
 
-    private TextView materialAction(String label, int sp) {
-        MaterialButton button = new MaterialButton(this);
-        button.setText(label);
-        button.setTextSize(sp);
-        button.setTextColor(accentColor());
-        button.setTypeface(Typeface.DEFAULT_BOLD);
-        button.setAllCaps(false);
-        button.setMinHeight(0);
-        button.setMinWidth(0);
-        button.setInsetTop(0);
-        button.setInsetBottom(0);
-        button.setPadding(dp(8), 0, dp(8), 0);
-        button.setStrokeWidth(0);
-        return button;
-    }
-
     private LinearLayout metric(String value, String label) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER);
-        box.addView(text(value, 22, false, Color.rgb(22, 137, 216)));
+        box.addView(text(value, 20, false, Color.rgb(22, 137, 216)));
         box.addView(text(label, 13, false, Color.rgb(145, 148, 153)));
         return box;
     }
@@ -1582,10 +1580,10 @@ public class MainActivity extends Activity {
     private LinearLayout card() {
         LinearLayout card = new LinearLayout(this);
         card.setPadding(dp(18), dp(14), dp(18), dp(14));
-        card.setBackground(rounded(cardColor(), dp(BuildConfig.MATERIAL_UI ? 18 : 14)));
-        card.setElevation(dp(BuildConfig.MATERIAL_UI ? 2 : 1));
+        card.setBackground(rounded(cardColor(), dp(14)));
+        card.setElevation(dp(1));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.setMargins(0, 0, 0, dp(BuildConfig.MATERIAL_UI ? 12 : 14));
+        lp.setMargins(0, 0, 0, dp(14));
         card.setLayoutParams(lp);
         return card;
     }
@@ -1753,6 +1751,27 @@ public class MainActivity extends Activity {
         return total;
     }
 
+    private double screenOnAvgPower(List<BatterySample> samples) {
+        long totalMs = 0;
+        double wh = 0;
+        for (int i = 1; i < samples.size(); i++) {
+            BatterySample prev = samples.get(i - 1);
+            BatterySample cur = samples.get(i);
+            long dt = Math.max(0, cur.timeMs - prev.timeMs);
+            if (dt > 10 * 60 * 1000L) {
+                dt = 10 * 60 * 1000L;
+            }
+            if (prev.screenOn) {
+                totalMs += dt;
+                wh += sanePower(prev) * dt / 3600000.0;
+            }
+        }
+        if (totalMs < 60 * 1000L) {
+            return 0;
+        }
+        return Math.min(wh * 3600000.0 / totalMs, 35.0);
+    }
+
     private String formatClock(long timeMs) {
         java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
         return format.format(new java.util.Date(timeMs));
@@ -1807,44 +1826,26 @@ public class MainActivity extends Activity {
     }
 
     private int pageBgColor() {
-        if (BuildConfig.MATERIAL_UI) {
-            return isDarkMode() ? Color.rgb(15, 18, 22) : Color.rgb(246, 248, 252);
-        }
         return isDarkMode() ? Color.rgb(20, 23, 27) : Color.rgb(241, 242, 244);
     }
 
     private int cardColor() {
-        if (BuildConfig.MATERIAL_UI) {
-            return isDarkMode() ? Color.rgb(29, 33, 39) : Color.rgb(255, 251, 254);
-        }
         return isDarkMode() ? Color.rgb(30, 35, 41) : Color.WHITE;
     }
 
     private int primaryTextColor() {
-        if (BuildConfig.MATERIAL_UI) {
-            return isDarkMode() ? Color.rgb(232, 234, 238) : Color.rgb(30, 34, 40);
-        }
         return isDarkMode() ? Color.rgb(226, 231, 236) : Color.rgb(52, 55, 58);
     }
 
     private int secondaryTextColor() {
-        if (BuildConfig.MATERIAL_UI) {
-            return isDarkMode() ? Color.rgb(166, 173, 184) : Color.rgb(99, 107, 118);
-        }
         return isDarkMode() ? Color.rgb(155, 164, 174) : Color.rgb(120, 123, 128);
     }
 
     private int accentColor() {
-        if (BuildConfig.MATERIAL_UI) {
-            return isDarkMode() ? Color.rgb(126, 192, 255) : Color.rgb(0, 104, 184);
-        }
         return isDarkMode() ? Color.rgb(105, 178, 245) : Color.rgb(22, 137, 216);
     }
 
     private int chipColor() {
-        if (BuildConfig.MATERIAL_UI) {
-            return isDarkMode() ? Color.rgb(37, 43, 51) : Color.rgb(232, 240, 249);
-        }
         return isDarkMode() ? Color.rgb(38, 43, 49) : Color.WHITE;
     }
 

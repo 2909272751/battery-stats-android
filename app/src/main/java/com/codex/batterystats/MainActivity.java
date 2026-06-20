@@ -74,6 +74,9 @@ public class MainActivity extends Activity {
     private LinearLayout processListCard;
     private int processListStartIndex;
     private int processVisibleLimit = 20;
+    private final Map<String, String> labelCache = new HashMap<>();
+    private final Map<String, Boolean> systemPackageCache = new HashMap<>();
+    private final Map<String, Drawable> iconCache = new HashMap<>();
     private int dischargeSortMode = 0;
     private boolean dischargeShowSystemApps;
     private boolean dischargeSortAscending;
@@ -1005,7 +1008,10 @@ public class MainActivity extends Activity {
         search.setHint("搜索进程名");
         search.setText(processKeyword);
         search.setTextSize(15);
-        search.setBackground(rounded(Color.rgb(247, 248, 249), dp(10)));
+        search.setHint("\u641c\u7d22\u8fdb\u7a0b\u540d");
+        search.setTextColor(primaryTextColor());
+        search.setHintTextColor(secondaryTextColor());
+        search.setBackground(rounded(isDarkMode() ? Color.rgb(38, 43, 49) : Color.rgb(247, 248, 249), dp(10)));
         search.setPadding(dp(12), 0, dp(12), 0);
         search.setOnFocusChangeListener((v, hasFocus) -> processSearchFocused = hasFocus);
         search.addTextChangedListener(new TextWatcher() {
@@ -1048,10 +1054,40 @@ public class MainActivity extends Activity {
 
     private void appendProcessListViews(LinearLayout content) {
         if (processLoading && processCache.isEmpty()) {
-            addLoadingCard(content, "正在读取进程信息...");
+            addLoadingCard(content, "\u6b63\u5728\u8bfb\u53d6\u8fdb\u7a0b\u4fe1\u606f...");
+            addProcessSkeletonCard(content);
+            return;
         }
         processListCard = createProcessListCard(filteredProcessList());
         content.addView(processListCard);
+    }
+
+    private void addProcessSkeletonCard(LinearLayout content) {
+        LinearLayout card = card();
+        card.setOrientation(LinearLayout.VERTICAL);
+        for (int i = 0; i < 12; i++) {
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(7), 0, dp(7));
+            TextView icon = text("", 1, false, secondaryTextColor());
+            icon.setBackground(rounded(isDarkMode() ? Color.rgb(43, 48, 54) : Color.rgb(238, 240, 243), dp(12)));
+            row.addView(icon, new LinearLayout.LayoutParams(dp(46), dp(46)));
+
+            LinearLayout lines = new LinearLayout(this);
+            lines.setOrientation(LinearLayout.VERTICAL);
+            lines.setPadding(dp(10), 0, 0, 0);
+            View line1 = new View(this);
+            line1.setBackground(rounded(isDarkMode() ? Color.rgb(48, 54, 62) : Color.rgb(232, 235, 238), dp(4)));
+            View line2 = new View(this);
+            line2.setBackground(rounded(isDarkMode() ? Color.rgb(42, 47, 54) : Color.rgb(240, 242, 244), dp(4)));
+            lines.addView(line1, new LinearLayout.LayoutParams(-1, dp(12)));
+            LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(dp(120), dp(10));
+            lp2.setMargins(0, dp(8), 0, 0);
+            lines.addView(line2, lp2);
+            row.addView(lines, new LinearLayout.LayoutParams(0, dp(54), 1));
+            card.addView(row);
+        }
+        content.addView(card);
     }
 
     private void refreshProcessListOnly() {
@@ -1102,6 +1138,9 @@ public class MainActivity extends Activity {
     }
 
     private void addLoadingCard(LinearLayout content, String message) {
+        if (processLoading && processCache.isEmpty() && processListStartIndex > 0 && content.getChildCount() > processListStartIndex) {
+            return;
+        }
         LinearLayout card = card();
         card.setGravity(Gravity.CENTER_VERTICAL);
         TextView spinner = text("...", 24, true, Color.rgb(22, 137, 216));
@@ -1148,7 +1187,7 @@ public class MainActivity extends Activity {
             LinearLayout names = new LinearLayout(this);
             names.setOrientation(LinearLayout.VERTICAL);
             names.setPadding(dp(10), 0, 0, 0);
-            names.addView(text(ProcessReader.label(this, info.packageName), 14, true, Color.rgb(55, 58, 62)));
+            names.addView(text(cachedLabel(info.packageName), 14, true, Color.rgb(55, 58, 62)));
             names.addView(text(info.processName, 11, false, Color.rgb(145, 148, 153)));
             row.addView(names, new LinearLayout.LayoutParams(0, dp(54), 2));
             row.addView(text(String.valueOf(info.pid), 12, false, Color.rgb(110, 114, 118)), new LinearLayout.LayoutParams(0, dp(54), 1));
@@ -1215,7 +1254,7 @@ public class MainActivity extends Activity {
         LinearLayout titleBox = new LinearLayout(this);
         titleBox.setOrientation(LinearLayout.VERTICAL);
         titleBox.setPadding(dp(10), 0, 0, 0);
-        titleBox.addView(text(ProcessReader.label(this, info.packageName), 16, true, primaryTextColor()));
+        titleBox.addView(text(cachedLabel(info.packageName), 16, true, primaryTextColor()));
         titleBox.addView(text(info.processName + "  PID " + info.pid, 11, false, secondaryTextColor()));
         head.addView(titleBox, new LinearLayout.LayoutParams(0, dp(48), 1));
         TextView close = text("X", 16, true, secondaryTextColor());
@@ -1376,15 +1415,14 @@ public class MainActivity extends Activity {
         String q = processKeyword == null ? "" : processKeyword.trim().toLowerCase(Locale.US);
         for (ProcessInfo info : processCache) {
             if (processAppOnly) {
-                if (!info.installedApp || info.systemApp || isSystemPackage(info.packageName)) {
+                if (!info.installedApp || info.systemApp || isSystemPackageCached(info.packageName)) {
                     continue;
                 }
             }
-            String label = ProcessReader.label(this, info.packageName).toLowerCase(Locale.US);
             if (q.length() > 0
                     && !info.packageName.toLowerCase(Locale.US).contains(q)
                     && !info.processName.toLowerCase(Locale.US).contains(q)
-                    && !label.contains(q)) {
+                    && !cachedLabel(info.packageName).toLowerCase(Locale.US).contains(q)) {
                 continue;
             }
             out.add(info);
@@ -1552,7 +1590,7 @@ public class MainActivity extends Activity {
     private List<StatsDatabase.AppUsage> filteredAppUsage() {
         ArrayList<StatsDatabase.AppUsage> out = new ArrayList<>();
         for (StatsDatabase.AppUsage usage : database.appUsageForLatestDischarge(this)) {
-            if (!dischargeShowSystemApps && isSystemPackage(usage.pkg)) {
+            if (!dischargeShowSystemApps && isSystemPackageCached(usage.pkg)) {
                 continue;
             }
             out.add(usage);
@@ -1566,6 +1604,32 @@ public class MainActivity extends Activity {
             java.util.Collections.reverse(out);
         }
         return out;
+    }
+
+    private String cachedLabel(String pkg) {
+        if (pkg == null || pkg.length() == 0) {
+            return "";
+        }
+        String cached = labelCache.get(pkg);
+        if (cached != null) {
+            return cached;
+        }
+        String label = ProcessReader.label(this, pkg);
+        labelCache.put(pkg, label);
+        return label;
+    }
+
+    private boolean isSystemPackageCached(String pkg) {
+        if (pkg == null || pkg.length() == 0) {
+            return true;
+        }
+        Boolean cached = systemPackageCache.get(pkg);
+        if (cached != null) {
+            return cached;
+        }
+        boolean system = isSystemPackage(pkg);
+        systemPackageCache.put(pkg, system);
+        return system;
     }
 
     private boolean isSystemPackage(String pkg) {
@@ -1865,7 +1929,11 @@ public class MainActivity extends Activity {
 
     private View appIconView(String pkg, String label, int index) {
         try {
-            Drawable icon = getPackageManager().getApplicationIcon(pkg);
+            Drawable icon = iconCache.get(pkg);
+            if (icon == null) {
+                icon = getPackageManager().getApplicationIcon(pkg);
+                iconCache.put(pkg, icon);
+            }
             ImageView image = new ImageView(this);
             image.setImageDrawable(icon);
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);

@@ -4,8 +4,16 @@ MODDIR=${0%/*}
 DATA_DIR=/data/adb/battery_stats
 CSV="$DATA_DIR/samples.csv"
 APP_CSV="$DATA_DIR/app_usage.csv"
+CHARGE_CSV="$DATA_DIR/charge_session.csv"
+DISCHARGE_CSV="$DATA_DIR/discharge_session.csv"
 PROC_REQ="$DATA_DIR/process_watch"
 PROC_TOP="$DATA_DIR/process_top.csv"
+PROC_TOP_STATUS="$DATA_DIR/process_top_status"
+PROC_LIST_REQ="$DATA_DIR/process_list_request"
+PROC_LIST="$DATA_DIR/process_list.csv"
+PUBLIC_PROC_LIST="/data/local/tmp/battery_stats_process_list.csv"
+PUBLIC_PROC_TOP="/data/local/tmp/battery_stats_process_top.csv"
+STATUS_FILE="$DATA_DIR/module_status"
 PID="$DATA_DIR/daemon.pid"
 ENABLED="$DATA_DIR/enabled"
 REALTIME_REQ="$DATA_DIR/realtime_page"
@@ -13,11 +21,35 @@ APP_PKG="com.codex.batterystats"
 GAUGE_DIR="/proc/oplus-votable/GAUGE_UPDATE"
 REALTIME_PID=""
 PROC_MON_PID=""
+PROC_LIST_PID=""
 
 mkdir -p "$DATA_DIR"
 [ -f "$ENABLED" ] || echo 1 > "$ENABLED"
 [ "$(cat "$ENABLED" 2>/dev/null)" = "0" ] && exit 0
 echo $$ > "$PID"
+
+detect_profile() {
+  brand="$(getprop ro.product.manufacturer 2>/dev/null | tr 'A-Z' 'a-z')"
+  hardware="$(getprop ro.hardware 2>/dev/null | tr 'A-Z' 'a-z')"
+  platform="$(getprop ro.board.platform 2>/dev/null | tr 'A-Z' 'a-z')"
+  if echo "$brand" | grep -qE 'oppo|realme|oneplus'; then
+    echo "oppo"
+  elif echo "$hardware $platform" | grep -qE 'mt[0-9]|mediatek|mtk'; then
+    echo "mtk"
+  elif echo "$hardware $platform" | grep -qE 'qcom|qualcomm|sm[0-9]|msm|sdm'; then
+    echo "qcom"
+  else
+    echo "generic"
+  fi
+}
+
+DEVICE_PROFILE="$(detect_profile)"
+GAUGE_AVAILABLE=0
+[ -d "$GAUGE_DIR" ] && GAUGE_AVAILABLE=1
+GAUGE_ACTIVE=0
+POWER_SOURCE="probing"
+PLUGGED_TYPE="none"
+SAMPLE_INTERVAL=10
 
 set_gauge_update() {
   [ -d "$GAUGE_DIR" ] || return 0
@@ -25,15 +57,35 @@ set_gauge_update() {
   if [ "$1" = "1" ]; then
     echo 1000 > "$GAUGE_DIR/force_val" 2>/dev/null
     echo 1 > "$GAUGE_DIR/force_active" 2>/dev/null
+    GAUGE_ACTIVE=1
   else
     echo 0 > "$GAUGE_DIR/force_active" 2>/dev/null
+    GAUGE_ACTIVE=0
   fi
+}
+
+write_status() {
+  gauge_state="$GAUGE_ACTIVE"
+  if [ -r "$GAUGE_DIR/force_active" ]; then
+    gauge_state="$(cat "$GAUGE_DIR/force_active" 2>/dev/null)"
+  fi
+  {
+    echo "profile=$DEVICE_PROFILE"
+    echo "gauge_available=$GAUGE_AVAILABLE"
+    echo "gauge_active=$gauge_state"
+    echo "sample_interval=$SAMPLE_INTERVAL"
+    echo "power_source=$POWER_SOURCE"
+    echo "plugged=$PLUGGED_TYPE"
+    echo "updated_at=$(date +%s)"
+  } > "$STATUS_FILE"
+  chmod 0644 "$STATUS_FILE" 2>/dev/null
 }
 
 cleanup() {
   set_gauge_update 0
   [ -n "$REALTIME_PID" ] && kill "$REALTIME_PID" 2>/dev/null
   [ -n "$PROC_MON_PID" ] && kill "$PROC_MON_PID" 2>/dev/null
+  [ -n "$PROC_LIST_PID" ] && kill "$PROC_LIST_PID" 2>/dev/null
 }
 
 trap cleanup EXIT TERM INT
@@ -51,6 +103,12 @@ read_node() {
   echo 0
 }
 
+uevent_field() {
+  file="$1"
+  key="$2"
+  awk -F= -v k="$key" '$1==k {print $2; exit}' "$file" 2>/dev/null
+}
+
 norm_voltage() {
   awk -v v="$1" 'BEGIN { if (v < 0) v=-v; if (v > 100000) printf "%.6f", v/1000000; else if (v > 100) printf "%.6f", v/1000; else printf "%.6f", v; }'
 }
@@ -66,8 +124,12 @@ norm_current() {
 }
 
 status_code() {
-  s="$(read_node /sys/class/power_supply/battery/status)"
-  online="$(read_node /sys/class/power_supply/usb/online /sys/class/power_supply/ac/online /sys/class/power_supply/dc/online /sys/class/power_supply/wireless/online)"
+  uevent="/sys/class/power_supply/battery/uevent"
+  if [ -r "$uevent" ]; then
+    s="$(uevent_field "$uevent" POWER_SUPPLY_STATUS)"
+  fi
+  [ -n "$s" ] || s="$(read_node /sys/class/power_supply/battery/status)"
+  online="$(plugged_type)"
   charge_type="$(read_node /sys/class/power_supply/battery/charge_type)"
   level="$(read_node /sys/class/power_supply/battery/capacity)"
   case "$s" in
@@ -76,7 +138,7 @@ status_code() {
     Full) echo 5 ;;
     Not*) echo 4 ;;
     *)
-      if [ "$online" = "1" ] || [ "$charge_type" != "N/A" ] && [ "$charge_type" != "0" ]; then
+      if [ "$online" != "none" ] || [ "$charge_type" != "N/A" ] && [ "$charge_type" != "0" ]; then
         if [ "${level:-0}" -ge 100 ]; then echo 5; else echo 2; fi
       else
         echo 3
@@ -85,9 +147,80 @@ status_code() {
   esac
 }
 
+plugged_type() {
+  usb="$(read_node /sys/class/power_supply/usb/online)"
+  dc="$(read_node /sys/class/power_supply/dc/online)"
+  ac="$(read_node /sys/class/power_supply/ac/online)"
+  wireless="$(read_node /sys/class/power_supply/wireless/online)"
+  if [ "$wireless" = "1" ]; then
+    echo "wireless"
+  elif [ "$dc" = "1" ]; then
+    echo "dc"
+  elif [ "$ac" = "1" ]; then
+    echo "ac"
+  elif [ "$usb" = "1" ]; then
+    echo "usb"
+  else
+    echo "none"
+  fi
+}
+
+read_battery_bundle() {
+  uevent="/sys/class/power_supply/battery/uevent"
+  if [ -r "$uevent" ]; then
+    level="$(uevent_field "$uevent" POWER_SUPPLY_CAPACITY)"
+    raw_current="$(uevent_field "$uevent" POWER_SUPPLY_CURRENT_NOW)"
+    [ -n "$raw_current" ] || raw_current="$(uevent_field "$uevent" POWER_SUPPLY_CURRENT_AVG)"
+    raw_voltage="$(uevent_field "$uevent" POWER_SUPPLY_VOLTAGE_NOW)"
+    raw_temp="$(uevent_field "$uevent" POWER_SUPPLY_TEMP)"
+    raw_power="$(uevent_field "$uevent" POWER_SUPPLY_POWER_NOW)"
+  fi
+  [ -n "$level" ] || level="$(read_node /sys/class/power_supply/battery/capacity)"
+  [ -n "$raw_current" ] || raw_current="$(read_node /sys/class/power_supply/battery/current_now /sys/class/power_supply/qcom-battery/current_now /sys/class/power_supply/bms/current_now /sys/class/power_supply/maxfg/current_now /sys/class/power_supply/mtk-battery/current_now)"
+  [ -n "$raw_voltage" ] || raw_voltage="$(read_node /sys/class/power_supply/battery/voltage_now /sys/class/power_supply/qcom-battery/voltage_now /sys/class/power_supply/bms/voltage_now /sys/class/power_supply/maxfg/voltage_now /sys/class/power_supply/mtk-battery/voltage_now)"
+  [ -n "$raw_temp" ] || raw_temp="$(read_node /sys/class/power_supply/battery/temp /sys/class/power_supply/qcom-battery/temp /sys/class/power_supply/bms/temp /sys/class/power_supply/mtk-battery/temp)"
+  [ -n "$raw_power" ] || raw_power="$(read_node /sys/class/power_supply/battery/power_now /sys/class/power_supply/qcom-battery/power_now /sys/class/power_supply/bms/power_now /sys/class/power_supply/maxfg/power_now)"
+}
+
+norm_power() {
+  awk -v v="$1" 'BEGIN {
+    if (v == "" || v == 0) { printf "0.000000"; exit }
+    if (v < 0) v=-v;
+    p[1]=v/1000000; p[2]=v/1000000000; p[3]=v/1000; p[4]=v;
+    for (i=1;i<=4;i++) if (p[i]>=0.01 && p[i]<=150) { printf "%.6f", p[i]; exit }
+    printf "0.000000";
+  }'
+}
+
+choose_power() {
+  direct="$(norm_power "$raw_power")"
+  cv="$(awk -v c="$current" -v v="$voltage" 'BEGIN { if (c < 0) c=-c; printf "%.6f", c*v }')"
+  if [ "$status" = "2" ] || [ "$status" = "5" ]; then
+    max=100
+  else
+    max=35
+  fi
+  power="$(awk -v d="$direct" -v cv="$cv" -v max="$max" 'BEGIN {
+    p=(d>=0.05 && d<=max ? d : cv);
+    if (p > max) p=max;
+    if (p < 0) p=0;
+    printf "%.6f", p;
+  }')"
+  if awk -v d="$direct" -v max="$max" 'BEGIN { exit !(d>=0.05 && d<=max) }'; then
+    POWER_SOURCE="power_now"
+  else
+    POWER_SOURCE="current_voltage"
+  fi
+}
+
 foreground_pkg() {
-  line="$(dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp' | head -n 1)"
-  echo "$line" | sed -n 's/.*[ /]\([A-Za-z0-9_.-]*\)\/.*/\1/p' | head -n 1
+  pkg="$(dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp|mTopFullscreenOpaqueWindowState' | head -n 3 \
+    | sed -n 's/.*[ /]\([A-Za-z0-9_.-]*\)\/.*/\1/p' | grep '\.' | head -n 1)"
+  if [ -z "$pkg" ]; then
+    pkg="$(dumpsys activity activities 2>/dev/null | grep -E 'mResumedActivity|topResumedActivity|ResumedActivity|ACTIVITY ' | head -n 8 \
+      | sed -n 's/.* \([A-Za-z0-9_.-]*\)\/.*/\1/p' | grep '\.' | head -n 1)"
+  fi
+  echo "$pkg"
 }
 
 screen_on() {
@@ -112,6 +245,7 @@ realtime_gauge_manager() {
     if [ "$need" != "$gauge_active" ]; then
       set_gauge_update "$need"
       gauge_active="$need"
+      write_status
     fi
     sleep 2
   done
@@ -126,6 +260,16 @@ trim_csv() {
   app_lines="$(wc -l < "$APP_CSV" 2>/dev/null)"
   if [ "${app_lines:-0}" -gt 40000 ]; then
     tail -n 32000 "$APP_CSV" > "$APP_CSV.tmp" && mv "$APP_CSV.tmp" "$APP_CSV"
+  fi
+  charge_lines="$(wc -l < "$CHARGE_CSV" 2>/dev/null)"
+  if [ "${charge_lines:-0}" -gt 20000 ]; then
+    head -n 1 "$CHARGE_CSV" > "$CHARGE_CSV.tmp"
+    tail -n 16000 "$CHARGE_CSV" >> "$CHARGE_CSV.tmp" && mv "$CHARGE_CSV.tmp" "$CHARGE_CSV"
+  fi
+  discharge_lines="$(wc -l < "$DISCHARGE_CSV" 2>/dev/null)"
+  if [ "${discharge_lines:-0}" -gt 30000 ]; then
+    head -n 1 "$DISCHARGE_CSV" > "$DISCHARGE_CSV.tmp"
+    tail -n 24000 "$DISCHARGE_CSV" >> "$DISCHARGE_CSV.tmp" && mv "$DISCHARGE_CSV.tmp" "$DISCHARGE_CSV"
   fi
 }
 
@@ -168,6 +312,7 @@ process_monitor() {
     watch_name="${watch_rest#*|}"
     [ "$watch_name" = "$watch_rest" ] && watch_name=""
     case "$watch_pid" in ''|*[!0-9]*) watch_pid=0 ;; esac
+    echo "loop pid=$watch_pid pkg=$watch_pkg name=$watch_name time=$(date +%s)" > "$PROC_TOP_STATUS"
     if [ ! -d "/proc/$watch_pid" ]; then
       np=""
       if [ -n "$watch_pkg" ]; then
@@ -177,28 +322,24 @@ process_monitor() {
         np="$(pidof "$watch_name" 2>/dev/null | awk '{print $1; exit}')"
       fi
       if [ -z "$np" ]; then
-        for x in /proc/[0-9]*; do
-          [ -r "$x/cmdline" ] || continue
-          cmd="$(tr '\0' ' ' < "$x/cmdline" 2>/dev/null | awk '{print $1}')"
-          [ -z "$cmd" ] && cmd="$(cat "$x/comm" 2>/dev/null)"
-          if [ -n "$watch_pkg" ]; then
-            case "$cmd" in "$watch_pkg"|"$watch_pkg":*) np="${x##*/}"; break ;; esac
-          fi
-          if [ -n "$watch_name" ] && [ "$cmd" = "$watch_name" ]; then
-            np="${x##*/}"
-            break
-          fi
-        done
+        np="$(awk -F'|' -v pkg="$watch_pkg" -v name="$watch_name" '
+          pkg != "" && ($6 == pkg || $6 ~ "^" pkg ":" || $7 == pkg || $7 ~ "^" pkg ":") { print $1; exit }
+          name != "" && ($6 == name || $7 == name || $10 == name) { print $1; exit }
+        ' "$PROC_LIST" 2>/dev/null)"
       fi
       [ -n "$np" ] && watch_pid="$np"
     fi
     if [ ! -d "/proc/$watch_pid" ]; then
+      echo "end pid=$watch_pid pkg=$watch_pkg time=$(date +%s)" > "$PROC_TOP_STATUS"
       echo "END|$watch_pid|$watch_pkg" > "$PROC_TOP.tmp"
       mv "$PROC_TOP.tmp" "$PROC_TOP"
       chmod 0644 "$PROC_TOP" 2>/dev/null
+      cp "$PROC_TOP" "$PUBLIC_PROC_TOP" 2>/dev/null
+      chmod 0644 "$PUBLIC_PROC_TOP" 2>/dev/null
       sleep 1
       continue
     fi
+    echo "sample pid=$watch_pid pkg=$watch_pkg time=$(date +%s)" > "$PROC_TOP_STATUS"
 
     total="$(awk '/^cpu / {print $2+$3+$4+$5+$6+$7+$8; exit}' /proc/stat 2>/dev/null)"
     cores="$(grep -c '^cpu[0-9]' /proc/stat 2>/dev/null)"
@@ -253,6 +394,8 @@ process_monitor() {
     } > "$PROC_TOP.tmp"
     mv "$PROC_TOP.tmp" "$PROC_TOP"
     chmod 0644 "$PROC_TOP" 2>/dev/null
+    cp "$PROC_TOP" "$PUBLIC_PROC_TOP" 2>/dev/null
+    chmod 0644 "$PUBLIC_PROC_TOP" 2>/dev/null
     {
       echo "TOTAL $total"
       echo "PROC $proc_ticks"
@@ -266,7 +409,100 @@ process_monitor() {
       done
     } > "$prev.tmp"
     mv "$prev.tmp" "$prev"
-    sleep 1
+    sleep 0.5
+  done
+}
+
+process_list_requested() {
+  [ -f "$PROC_LIST_REQ" ] || return 1
+  flag="$(awk '{print $1; exit}' "$PROC_LIST_REQ" 2>/dev/null)"
+  req_ts="$(awk '{print $2; exit}' "$PROC_LIST_REQ" 2>/dev/null)"
+  [ "$flag" = "1" ] || return 1
+  now="$(date +%s)"
+  [ -n "$req_ts" ] || req_ts=0
+  [ $((now - req_ts)) -le 8 ]
+}
+
+process_list_monitor() {
+  prev="$DATA_DIR/process_list_prev.tmp"
+  cur="$DATA_DIR/process_list_cur.tmp"
+  while true; do
+    [ "$(cat "$ENABLED" 2>/dev/null)" = "0" ] && exit 0
+    if ! process_list_requested; then
+      sleep 2
+      continue
+    fi
+    total="$(awk '/^cpu / {print $2+$3+$4+$5+$6+$7+$8; exit}' /proc/stat 2>/dev/null)"
+    cores="$(grep -c '^cpu[0-9]' /proc/stat 2>/dev/null)"
+    [ -n "$cores" ] || cores=1
+    old_total="$(awk -F'[| ]+' '$1=="TOTAL" {print $2; exit}' "$prev" 2>/dev/null)"
+    [ -n "$old_total" ] || old_total=0
+    tmp="$DATA_DIR/process_list.tmp"
+    : > "$cur"
+    echo "TS|$(date +%s)|$total" > "$tmp"
+    for d in /proc/[0-9]*; do
+      [ -d "$d" ] || continue
+      pid="${d##*/}"
+      cmdline="$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null | sed 's/[|]/ /g; s/[[:space:]]*$//')"
+      command="${cmdline%% *}"
+      [ -n "$command" ] || command="$(cat "$d/comm" 2>/dev/null | sed 's/[|]/ /g')"
+      [ -n "$command" ] || continue
+      case "$command" in kworker*|migration*|rcu*|irq/*|kswapd*|watchdog*) continue;; esac
+      pkg="${command%%:*}"
+      status="$d/status"
+      rss=0; shr=0; swap=0; state=""; ppid=0; cpus=""
+      while read k v rest; do
+        case "$k" in
+          VmRSS:) rss="$v" ;;
+          RssFile:) shr="$v" ;;
+          VmSwap:) swap="$v" ;;
+          State:) state="$v" ;;
+          PPid:) ppid="$v" ;;
+          Cpus_allowed_list:) cpus="$v" ;;
+        esac
+      done < "$status" 2>/dev/null
+      user="$(ls -ld "$d" 2>/dev/null | awk '{print $3}')"
+      stat_line="$(cat "$d/stat" 2>/dev/null)" || continue
+      right="${stat_line#*) }"
+      set -- $right
+      ticks=$(( ${12:-0} + ${13:-0} ))
+      echo "$pid|$ticks|$rss|$shr|$swap|$pkg|$command|$user|$state|$command|$cmdline|$ppid|$cpus" >> "$cur"
+    done
+    awk -F'|' -v old_total="$old_total" -v total="$total" -v cores="$cores" '
+      NR==FNR {
+        if ($1 == "TOTAL") next
+        if (NF == 1) {
+          split($0, p, /[ ]+/)
+          old[p[1]]=p[2]
+        } else {
+          old[$1]=$2
+        }
+        next
+      }
+      {
+        pid=$1
+        ticks=$2
+        cpu=0
+        if (old_total > 0 && total > old_total && ticks >= old[pid]) {
+          cpu=(ticks-old[pid]) * cores * 100 / (total-old_total)
+        }
+        printf "%s|%.1f|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", pid,cpu,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+      }
+    ' "$prev" "$cur" >> "$tmp"
+    if [ "$(wc -l < "$tmp" 2>/dev/null)" -gt 1 ]; then
+      mv "$tmp" "$PROC_LIST"
+      cp "$PROC_LIST" "$PUBLIC_PROC_LIST" 2>/dev/null
+      chmod 0644 "$PUBLIC_PROC_LIST" 2>/dev/null
+    else
+      rm -f "$tmp"
+    fi
+    chmod 0644 "$PROC_LIST" 2>/dev/null
+    {
+      echo "TOTAL|$total"
+      awk -F'|' '{print $1 "|" $2}' "$cur"
+    } > "$prev.tmp"
+    mv "$prev.tmp" "$prev"
+    sleep 2
   done
 }
 
@@ -286,6 +522,7 @@ write_app_usage() {
     fi
     return
   fi
+  fg_seen="$(awk -v fg="$fg" '$1==fg {print 1; exit}' "$tmp")"
   awk -v ts="$ts" -v dt="$dt_ms" -v wh="$wh" -v fg="$fg" -v total="$total_ticks" '
     {
       pkg=$1
@@ -298,6 +535,9 @@ write_app_usage() {
       }
     }
   ' "$tmp" >> "$APP_CSV"
+  if [ -n "$fg" ] && [ "$fg_seen" != "1" ]; then
+    echo "$ts,$fg,$dt_ms,0,$wh,0,0" >> "$APP_CSV"
+  fi
 }
 
 if [ ! -f "$CSV" ]; then
@@ -306,12 +546,24 @@ fi
 if [ ! -f "$APP_CSV" ]; then
   echo "time_ms,pkg,fg_ms,bg_ms,fg_wh,bg_wh,cpu_ticks" > "$APP_CSV"
 fi
+if [ ! -f "$CHARGE_CSV" ]; then
+  echo "time_ms,session_id,level,status,current_a,voltage_v,power_w,temp_c,screen_on,plugged,power_source" > "$CHARGE_CSV"
+else
+  if ! head -n 1 "$CHARGE_CSV" 2>/dev/null | grep -q "plugged"; then
+    { echo "time_ms,session_id,level,status,current_a,voltage_v,power_w,temp_c,screen_on,plugged,power_source"; tail -n +2 "$CHARGE_CSV" 2>/dev/null; } > "$CHARGE_CSV.tmp" && mv "$CHARGE_CSV.tmp" "$CHARGE_CSV"
+  fi
+fi
+if [ ! -f "$DISCHARGE_CSV" ]; then
+  echo "time_ms,session_id,level,status,current_a,voltage_v,power_w,temp_c,screen_on,pkg" > "$DISCHARGE_CSV"
+fi
 
 cached_pkg=""
 cached_pkg_at=0
 last_ms=0
 last_power=0
 last_status=0
+charge_session=0
+discharge_session=0
 last_cpu_ms=0
 pending_wh=0
 prev_cpu="$DATA_DIR/cpu_prev.tmp"
@@ -319,27 +571,29 @@ next_cpu="$DATA_DIR/cpu_next.tmp"
 cpu_snapshot "$prev_cpu"
 process_monitor &
 PROC_MON_PID="$!"
+process_list_monitor &
+PROC_LIST_PID="$!"
 realtime_gauge_manager &
 REALTIME_PID="$!"
+write_status
 
 while true; do
   [ "$(cat "$ENABLED" 2>/dev/null)" = "0" ] && exit 0
   now_s="$(date +%s)"
   now_ms="${now_s}000"
-  level="$(read_node /sys/class/power_supply/battery/capacity)"
   status="$(status_code)"
-  raw_current="$(read_node /sys/class/power_supply/battery/current_now /sys/class/power_supply/bms/current_now /sys/class/power_supply/maxfg/current_now)"
-  raw_voltage="$(read_node /sys/class/power_supply/battery/voltage_now /sys/class/power_supply/bms/voltage_now)"
-  raw_temp="$(read_node /sys/class/power_supply/battery/temp)"
+  level=""
+  raw_current=""
+  raw_voltage=""
+  raw_temp=""
+  raw_power=""
+  read_battery_bundle
   current="$(norm_current "$raw_current")"
   voltage="$(norm_voltage "$raw_voltage")"
   temp="$(awk -v t="$raw_temp" 'BEGIN { if (t > 1000 || t < -1000) printf "%.1f", t/1000; else printf "%.1f", t/10; }')"
-  power="$(awk -v c="$current" -v v="$voltage" -v s="$status" 'BEGIN { if (c < 0) c=-c; p=c*v; max=(s==2 || s==5) ? 100 : 35; if (p > max) p=max; if (p < 0) p=0; printf "%.6f", p; }')"
-
-  if [ $((now_s - cached_pkg_at)) -ge 60 ] || [ -z "$cached_pkg" ]; then
-    cached_pkg="$(foreground_pkg)"
-    cached_pkg_at="$now_s"
-  fi
+  choose_power
+  plugged="$(plugged_type)"
+  PLUGGED_TYPE="$plugged"
 
   if screen_on; then
     is_screen_on=1
@@ -349,7 +603,48 @@ while true; do
     cpu_interval=180000
   fi
 
+  if [ "$status" = "3" ] && [ "$is_screen_on" = "1" ]; then
+    pkg_refresh=10
+  else
+    pkg_refresh=60
+  fi
+  if [ $((now_s - cached_pkg_at)) -ge "$pkg_refresh" ] || [ -z "$cached_pkg" ]; then
+    cached_pkg="$(foreground_pkg)"
+    cached_pkg="$(echo "$cached_pkg" | grep -v "^$APP_PKG$" | head -n 1)"
+    cached_pkg_at="$now_s"
+  fi
+
   echo "$now_ms,$level,$status,$current,$voltage,$power,$temp,$is_screen_on,$cached_pkg" >> "$CSV"
+  if [ "$status" = "2" ] || [ "$status" = "5" ]; then
+    if [ "$charge_session" = "0" ]; then
+      last_charge="$(tail -n 1 "$CHARGE_CSV" 2>/dev/null)"
+      last_charge_status="$(echo "$last_charge" | awk -F, '{print $4}')"
+      last_charge_session="$(echo "$last_charge" | awk -F, '{print $2}')"
+      if [ "$last_charge_status" = "2" ] || [ "$last_charge_status" = "5" ]; then
+        charge_session="$last_charge_session"
+      else
+        charge_session="$now_ms"
+      fi
+    fi
+    echo "$now_ms,$charge_session,$level,$status,$current,$voltage,$power,$temp,$is_screen_on,$plugged,$POWER_SOURCE" >> "$CHARGE_CSV"
+  else
+    charge_session=0
+  fi
+  if [ "$status" = "3" ]; then
+    if [ "$discharge_session" = "0" ]; then
+      last_discharge="$(tail -n 1 "$DISCHARGE_CSV" 2>/dev/null)"
+      last_discharge_status="$(echo "$last_discharge" | awk -F, '{print $4}')"
+      last_discharge_session="$(echo "$last_discharge" | awk -F, '{print $2}')"
+      if [ "$last_discharge_status" = "3" ]; then
+        discharge_session="$last_discharge_session"
+      else
+        discharge_session="$now_ms"
+      fi
+    fi
+    echo "$now_ms,$discharge_session,$level,$status,$current,$voltage,$power,$temp,$is_screen_on,$cached_pkg" >> "$DISCHARGE_CSV"
+  else
+    discharge_session=0
+  fi
   if [ "$last_ms" != "0" ]; then
     dt_ms=$((now_ms - last_ms))
     if [ "$dt_ms" -gt 0 ] && [ "$last_status" = "3" ]; then
@@ -372,11 +667,22 @@ while true; do
   last_status="$status"
   chmod 0644 "$CSV" 2>/dev/null
   chmod 0644 "$APP_CSV" 2>/dev/null
+  chmod 0644 "$CHARGE_CSV" 2>/dev/null
+  chmod 0644 "$DISCHARGE_CSV" 2>/dev/null
   trim_csv
 
-  if [ "$status" = "2" ] || [ "$status" = "5" ]; then
-    if [ "$is_screen_on" = "1" ]; then sleep 5; else sleep 15; fi
-  else
-    if [ "$is_screen_on" = "1" ]; then sleep 10; else sleep 30; fi
+  realtime=0
+  if realtime_page_requested && [ "$is_screen_on" = "1" ]; then
+    fg_now="$(foreground_pkg)"
+    [ "$fg_now" = "$APP_PKG" ] && realtime=1
   fi
+  if [ "$realtime" = "1" ]; then
+    SAMPLE_INTERVAL=1
+  elif [ "$status" = "2" ] || [ "$status" = "5" ]; then
+    if [ "$is_screen_on" = "1" ]; then SAMPLE_INTERVAL=5; else SAMPLE_INTERVAL=15; fi
+  else
+    if [ "$is_screen_on" = "1" ]; then SAMPLE_INTERVAL=10; else SAMPLE_INTERVAL=30; fi
+  fi
+  write_status
+  sleep "$SAMPLE_INTERVAL"
 done

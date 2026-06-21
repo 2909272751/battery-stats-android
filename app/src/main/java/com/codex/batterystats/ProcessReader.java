@@ -12,6 +12,7 @@ import java.util.Map;
 
 final class ProcessReader {
     private static final Map<Integer, Long> LAST_TICKS = new HashMap<>();
+    private static final Map<String, PackageMark> PACKAGE_MARKS = new HashMap<>();
     private static long lastTotalTicks;
     private static String lastError = "";
 
@@ -20,22 +21,27 @@ final class ProcessReader {
 
     static List<ProcessInfo> read(Context context, String keyword, int sortMode, boolean appOnly) {
         lastError = "";
+        List<ProcessInfo> module = readFromModule(context, keyword, appOnly);
+        if (!module.isEmpty()) {
+            sort(module, sortMode);
+            return module;
+        }
         String script = "read c u n sy id io irq sirq rest < /proc/stat; "
                 + "echo TOTAL\\|$((u+n+sy+id+io+irq+sirq)); "
                 + "for d in /proc/[0-9]*; do "
                 + "pid=${d##*/}; "
-                + "cmd=$(cat \"$d/cmdline\" 2>/dev/null); cmd=${cmd%%:*}; cmd=${cmd%% *}; "
-                + "[ -z \"$cmd\" ] && cmd=$(cat \"$d/comm\" 2>/dev/null); "
-                + "[ -z \"$cmd\" ] && continue; "
-                + "case \"$cmd\" in kworker*|migration*|rcu*|irq/*|kswapd*|watchdog*) continue;; esac; "
-                + "pkg=${cmd%%:*}; "
-                + "rss=0; while read k v unit; do [ \"$k\" = \"VmRSS:\" ] && { rss=$v; break; }; done < \"$d/status\" 2>/dev/null; "
+                + "cmdline=$(tr '\\0|' '  ' < \"$d/cmdline\" 2>/dev/null); "
+                + "cmd=${cmdline%% *}; [ -z \"$cmd\" ] && cmd=$(cat \"$d/comm\" 2>/dev/null | tr '|' ' '); "
+                + "[ -z \"$cmd\" ] && continue; case \"$cmd\" in kworker*|migration*|rcu*|irq/*|kswapd*|watchdog*) continue;; esac; "
+                + "pkg=${cmd%%:*}; user=$(ls -ld \"$d\" 2>/dev/null | awk '{print $3}'); "
+                + "rss=0; shr=0; swap=0; st=''; ppid=0; cpus=''; "
+                + "while read k v rest; do case \"$k\" in VmRSS:) rss=$v;; RssFile:) shr=$v;; VmSwap:) swap=$v;; State:) st=$v;; PPid:) ppid=$v;; Cpus_allowed_list:) cpus=$v;; esac; done < \"$d/status\" 2>/dev/null; "
                 + "line=$(cat \"$d/stat\" 2>/dev/null); right=${line#*) }; set -- $right; ticks=$(( $12 + $13 )); "
-                + "echo \"$pid|$pkg|$cmd|$rss|$ticks\"; "
+                + "echo \"$pid|$pkg|$cmd|$rss|$ticks|$shr|$swap|$user|$st|$ppid|$cpus|$cmd|$cmdline\"; "
                 + "done";
         String out = readFromPs();
-        boolean fromPsFallback = out.length() > 0;
-        if (out.length() == 0 || !out.contains("|")) {
+        boolean fromPsFallback = hasProcessRows(out);
+        if (!hasProcessRows(out)) {
             out = RootShell.run(script, 1800);
             fromPsFallback = false;
         }
@@ -59,7 +65,7 @@ final class ProcessReader {
                 }
                 continue;
             }
-            String[] parts = line.split("\\|", 5);
+            String[] parts = line.split("\\|", 13);
             if (parts.length < 5) {
                 continue;
             }
@@ -69,6 +75,14 @@ final class ProcessReader {
                 info.packageName = parts[1];
                 info.processName = parts[2];
                 info.rssKb = Long.parseLong(parts[3]);
+                if (parts.length > 5) info.shrKb = parseLong(parts[5]);
+                if (parts.length > 6) info.swapKb = parseLong(parts[6]);
+                if (parts.length > 7) info.user = parts[7];
+                if (parts.length > 8) info.state = parts[8];
+                if (parts.length > 9) info.parentPid = (int) parseLong(parts[9]);
+                if (parts.length > 10) info.cpusAllowed = parts[10];
+                if (parts.length > 11) info.command = parts[11];
+                if (parts.length > 12) info.cmdline = parts[12];
                 String cpuField = parts[4].trim().replace("%", "");
                 if (fromPsFallback) {
                     try {
@@ -120,26 +134,74 @@ final class ProcessReader {
             lastTotalTicks = totalTicks;
         }
 
-        if (sortMode == 1) {
-            processes.sort((a, b) -> Long.compare(b.rssKb, a.rssKb));
-        } else {
-            processes.sort((a, b) -> Double.compare(b.cpuPercent, a.cpuPercent));
+        sort(processes, sortMode);
+        return processes;
+    }
+
+    private static List<ProcessInfo> readFromModule(Context context, String keyword, boolean appOnly) {
+        String out = RootShell.processListText();
+        ArrayList<ProcessInfo> processes = new ArrayList<>();
+        if (out.length() == 0 || !out.contains("|")) {
+            return processes;
+        }
+        String q = keyword == null ? "" : keyword.trim().toLowerCase(Locale.US);
+        PackageManager pm = context.getPackageManager();
+        for (String line : out.split("\\n")) {
+            if (line.startsWith("time_ms,") || line.startsWith("TS|") || line.trim().length() == 0) {
+                continue;
+            }
+            String[] p = line.split("\\|", 13);
+            if (p.length < 13) {
+                continue;
+            }
+            try {
+                ProcessInfo info = new ProcessInfo();
+                info.pid = Integer.parseInt(p[0].trim());
+                info.cpuPercent = parseDouble(p[1]);
+                info.rssKb = parseLong(p[2]);
+                info.shrKb = parseLong(p[3]);
+                info.swapKb = parseLong(p[4]);
+                info.packageName = p[5].trim().length() == 0 ? p[6].trim() : p[5].trim();
+                info.processName = p[6].trim().length() == 0 ? info.packageName : p[6].trim();
+                info.user = p[7].trim();
+                info.state = p[8].trim();
+                info.command = p[9].trim();
+                info.cmdline = p[10].trim();
+                info.parentPid = (int) parseLong(p[11]);
+                info.cpusAllowed = p[12].trim();
+                markPackage(context, pm, info);
+                if (appOnly && !info.installedApp) {
+                    continue;
+                }
+                if (q.length() > 0
+                        && !contains(info.packageName, q)
+                        && !contains(info.processName, q)
+                        && !contains(info.user, q)
+                        && !contains(info.command, q)
+                        && !contains(info.cmdline, q)
+                        && !String.valueOf(info.pid).contains(q)
+                        && !label(context, info.packageName).toLowerCase(Locale.US).contains(q)) {
+                    continue;
+                }
+                processes.add(info);
+            } catch (Exception ignored) {
+            }
         }
         return processes;
     }
 
     private static String readFromPs() {
         String script = "echo TOTAL\\|0; "
-                + "ps -A -o PID,RSS,PCPU,NAME 2>/dev/null | while read pid rss pcpu name rest; do "
+                + "ps -A -o PID,RSS,PCPU,USER,STAT,NAME 2>/dev/null | while read pid rss pcpu user stat name rest; do "
                 + "[ \"$pid\" = \"PID\" ] && continue; "
                 + "[ -z \"$pid\" ] && continue; "
                 + "[ -z \"$name\" ] && name=\"$rest\"; "
                 + "[ -z \"$name\" ] && continue; "
                 + "pkg=${name%%:*}; "
-                + "echo \"$pid|$pkg|$name|$rss|$pcpu\"; "
+                + "echo \"$pid|$pkg|$name|$rss|$pcpu|0|0|$user|$stat|0||$name|$name\"; "
                 + "done";
-        String out = RootShell.run(script, 800);
-        if (out.contains("|")) {
+        String out = RootShell.run(script, 2500);
+        if (hasProcessRows(out)) {
             return out;
         }
         script = "echo TOTAL\\|0; "
@@ -149,9 +211,21 @@ final class ProcessReader {
                 + "[ -z \"$name\" ] && name=\"$h\"; "
                 + "[ -z \"$pid\" ] && continue; "
                 + "pkg=${name%%:*}; "
-                + "echo \"$pid|$pkg|$name|$rss|0\"; "
+                + "echo \"$pid|$pkg|$name|$rss|0|0|0|$a||0||$name|$name\"; "
                 + "done";
-        return RootShell.run(script, 800);
+        return RootShell.run(script, 2500);
+    }
+
+    private static boolean hasProcessRows(String out) {
+        if (out == null || out.length() == 0 || !out.contains("|")) {
+            return false;
+        }
+        for (String line : out.split("\\n")) {
+            if (line.contains("|") && !line.startsWith("TOTAL|") && !line.startsWith("TS|")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String compact(String text) {
@@ -202,9 +276,7 @@ final class ProcessReader {
                 info.cpuPercent = Double.parseDouble(cpuOrTicks);
             }
             try {
-                ApplicationInfo appInfo = context.getPackageManager().getApplicationInfo(info.packageName, 0);
-                info.installedApp = true;
-                info.systemApp = (appInfo.flags & (ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
+                markPackage(context, context.getPackageManager(), info);
             } catch (Exception ignored) {
             }
             return info;
@@ -220,5 +292,68 @@ final class ProcessReader {
         } catch (Exception ignored) {
             return pkg;
         }
+    }
+
+    private static void markPackage(Context context, PackageManager pm, ProcessInfo info) {
+        PackageMark cached = PACKAGE_MARKS.get(info.packageName);
+        if (cached != null) {
+            info.installedApp = cached.installedApp;
+            info.systemApp = cached.systemApp;
+            info.friendlyName = cached.label;
+            return;
+        }
+        PackageMark mark = new PackageMark();
+        try {
+            ApplicationInfo appInfo = pm.getApplicationInfo(info.packageName, 0);
+            mark.installedApp = true;
+            mark.systemApp = (appInfo.flags & (ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
+            mark.label = pm.getApplicationLabel(appInfo).toString();
+        } catch (Exception ignored) {
+            mark.installedApp = false;
+            mark.systemApp = false;
+            mark.label = null;
+        }
+        PACKAGE_MARKS.put(info.packageName, mark);
+        info.installedApp = mark.installedApp;
+        info.systemApp = mark.systemApp;
+        info.friendlyName = mark.label;
+    }
+
+    private static boolean contains(String value, String q) {
+        return value != null && value.toLowerCase(Locale.US).contains(q);
+    }
+
+    private static long parseLong(String value) {
+        try {
+            return Long.parseLong(value == null ? "0" : value.trim());
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private static double parseDouble(String value) {
+        try {
+            return Double.parseDouble(value == null ? "0" : value.trim().replace("%", ""));
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private static void sort(List<ProcessInfo> processes, int sortMode) {
+        if (sortMode == 1) {
+            processes.sort((a, b) -> Long.compare(b.rssKb, a.rssKb));
+        } else if (sortMode == 2) {
+            processes.sort((a, b) -> Integer.compare(b.pid, a.pid));
+        } else if (sortMode == 3) {
+            return;
+        } else {
+            processes.sort((a, b) -> Double.compare(b.cpuPercent, a.cpuPercent));
+        }
+    }
+
+    private static final class PackageMark {
+        boolean installedApp;
+        boolean systemApp;
+        String label;
     }
 }

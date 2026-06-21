@@ -16,12 +16,12 @@
 
 ## 当前版本
 
-`2.0.1`
+`3.0.0`
 
 ## 安装方式
 
-1. 安装签名 APK：`battery-stats-v2.0.1-release-signed.apk`
-2. 在 Magisk、APatch 或 KernelSU 管理器中刷入模块：`battery-stats-v2.0.1-magisk-module.zip`
+1. 安装签名 APK：`battery-stats-v3.0.0-release-signed.apk`
+2. 在 Magisk、APatch 或 KernelSU 管理器中刷入模块：`battery-stats-v3.0.0-magisk-module.zip`
 3. 重启，或在管理器中执行模块动作按钮启动采样。
 4. 打开应用并授予 Root 权限。
 

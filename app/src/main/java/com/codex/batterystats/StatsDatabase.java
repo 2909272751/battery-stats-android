@@ -117,18 +117,70 @@ final class StatsDatabase extends SQLiteOpenHelper {
         return process;
     }
 
+    List<ChargeRecord> latestChargeRecords(int limit) {
+        List<BatterySample> samples = query(
+                "SELECT * FROM samples WHERE status IN (2,5) ORDER BY time_ms ASC",
+                null);
+        ArrayList<ChargeRecord> records = new ArrayList<>();
+        ChargeRecord current = null;
+        BatterySample previous = null;
+        for (BatterySample sample : samples) {
+            boolean newRecord = current == null
+                    || previous == null
+                    || sample.timeMs - previous.timeMs > 15 * 60 * 1000L
+                    || sample.level < current.startLevel - 1;
+            if (newRecord) {
+                if (current != null && current.sampleCount >= 2) {
+                    current.finish();
+                    records.add(current);
+                }
+                current = new ChargeRecord();
+                current.startMs = sample.timeMs;
+                current.startLevel = sample.level;
+            }
+            current.endMs = sample.timeMs;
+            current.endLevel = sample.level;
+            current.powerSum += Math.max(0, Math.min(100, sample.powerW));
+            current.maxPowerW = Math.max(current.maxPowerW, sample.powerW);
+            current.maxTempC = Math.max(current.maxTempC, sample.tempC);
+            current.sampleCount++;
+            previous = sample;
+        }
+        if (current != null && current.sampleCount >= 2) {
+            current.finish();
+            records.add(current);
+        }
+        ArrayList<ChargeRecord> out = new ArrayList<>();
+        for (int i = records.size() - 1; i >= 0 && out.size() < limit; i--) {
+            out.add(records.get(i));
+        }
+        return out;
+    }
+
+    List<BatterySample> chargeSamplesBetween(long startMs, long endMs) {
+        return query("SELECT * FROM samples WHERE status IN (2,5) AND time_ms BETWEEN ? AND ? ORDER BY time_ms ASC",
+                new String[]{String.valueOf(startMs), String.valueOf(endMs)});
+    }
+
     List<AppUsage> appUsageForLatestDischarge(Context context) {
         List<BatterySample> samples = latestProcess(false);
         List<AppUsage> rooted = rootedAppUsage(context, samples);
-        if (!rooted.isEmpty()) {
-            return rooted;
-        }
         HashMap<String, AppUsage> map = new HashMap<>();
+        HashMap<String, Boolean> rootedForeground = new HashMap<>();
+        for (AppUsage usage : rooted) {
+            map.put(usage.pkg, usage);
+            if (usage.foregroundMs > 0) {
+                rootedForeground.put(usage.pkg, true);
+            }
+        }
         for (int i = 1; i < samples.size(); i++) {
             BatterySample prev = samples.get(i - 1);
             BatterySample cur = samples.get(i);
             long dt = Math.max(0, cur.timeMs - prev.timeMs);
             if (dt <= 0 || prev.foregroundPackage == null || prev.foregroundPackage.length() == 0) {
+                continue;
+            }
+            if (rootedForeground.containsKey(prev.foregroundPackage)) {
                 continue;
             }
             AppUsage usage = map.get(prev.foregroundPackage);
@@ -147,7 +199,9 @@ final class StatsDatabase extends SQLiteOpenHelper {
         }
         ArrayList<AppUsage> list = new ArrayList<>(map.values());
         for (AppUsage usage : list) {
-            usage.avgPowerW = usage.durationMs > 0 ? usage.avgPowerNumerator / usage.durationMs : 0;
+            usage.energyWh = usage.foregroundWh + usage.backgroundWh;
+            usage.durationMs = usage.foregroundMs + usage.backgroundMs;
+            usage.avgPowerW = usage.durationMs > 0 ? usage.energyWh * 3600000.0 / usage.durationMs : 0;
         }
         list.sort((a, b) -> Double.compare(b.energyWh, a.energyWh));
         return list;
@@ -238,7 +292,32 @@ final class StatsDatabase extends SQLiteOpenHelper {
         }
 
         String detail() {
-            return String.format(Locale.CHINA, "AVG: %.2fW, \u540e\u53f0 %s", avgPowerW, BatteryReader.formatDuration(backgroundMs));
+            return String.format(Locale.CHINA, "前台 %s  后台 %s  AVG %.2fW",
+                    BatteryReader.formatDuration(foregroundMs),
+                    BatteryReader.formatDuration(backgroundMs),
+                    avgPowerW);
+        }
+    }
+
+    static final class ChargeRecord {
+        long startMs;
+        long endMs;
+        int startLevel;
+        int endLevel;
+        double avgPowerW;
+        double maxPowerW;
+        double maxTempC;
+        double powerSum;
+        int sampleCount;
+        long durationMs;
+
+        void finish() {
+            durationMs = Math.max(0, endMs - startMs);
+            avgPowerW = sampleCount > 0 ? powerSum / sampleCount : 0;
+        }
+
+        int deltaLevel() {
+            return endLevel - startLevel;
         }
     }
 

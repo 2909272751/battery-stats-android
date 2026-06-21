@@ -253,24 +253,17 @@ public class FloatingProcessService extends Service {
 
     private ProcessSnapshot sampleProcess() {
         ProcessSnapshot local = sampleProcessFromProc();
+        ProcessSnapshot cached = sampleProcessFromDaemon();
         if (local != null) {
-            if (local.cpuPercent <= 0.01 || local.threads.isEmpty()) {
-                ProcessSnapshot cached = sampleProcessFromDaemon();
-                if (cached != null) {
-                    mergeProcessSnapshots(local, cached);
-                }
+            if (cached != null) {
+                mergeProcessSnapshots(local, cached);
             }
             return local;
         }
-        ProcessSnapshot cached = sampleProcessFromDaemon();
-        if (cached != null && cached.cpuPercent <= 0.01) {
-            ProcessSnapshot retry = sampleProcessFromProc();
-            if (retry != null) {
-                mergeProcessSnapshots(retry, cached);
-                return retry;
-            }
+        if (cached != null) {
+            return cached;
         }
-        return cached;
+        return null;
     }
 
     private ProcessSnapshot sampleProcessFromProc() {
@@ -441,7 +434,7 @@ public class FloatingProcessService extends Service {
     }
 
     private ProcessSnapshot sampleProcessFromDaemon() {
-        String out = RootShell.run("cat /data/adb/battery_stats/process_top.csv 2>/dev/null", 350);
+        String out = RootShell.processTopText();
         if (out.length() == 0 || !out.contains("|")) return null;
         try {
             ProcessSnapshot info = new ProcessSnapshot();
@@ -545,7 +538,7 @@ public class FloatingProcessService extends Service {
                 + "allow=$(awk '/Cpus_allowed_list:/ {print $2; exit}' \"$t/status\" 2>/dev/null); [ -n \"$allow\" ] && echo \"ALLOW|$tid|$allow\"; "
                 + "echo \"TH|$tid|$cpu|$ticks|$comm\"; "
                 + "done";
-        String out = RootShell.run(script, 900);
+        String out = RootShell.run(script, 1600);
         if (out.length() > 0 && out.contains("|")) {
             return out;
         }

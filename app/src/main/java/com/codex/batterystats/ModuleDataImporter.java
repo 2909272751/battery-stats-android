@@ -55,6 +55,8 @@ final class ModuleDataImporter {
             } catch (Exception ignored) {
             }
         }
+        imported += importChargeSession(database);
+        imported += importDischargeSession(database);
         imported += importAppUsage(database);
         // Reaching this point means the module data file is readable.
         // There may be no new rows to import because the latest samples
@@ -73,11 +75,87 @@ final class ModuleDataImporter {
         lastReadableProbeAt = now;
         String out = RootShell.run(
                 "if [ -r /data/adb/battery_stats/samples.csv ]; then echo samples; "
+                        + "elif [ -r /data/adb/battery_stats/charge_session.csv ]; then echo charge; "
+                        + "elif [ -r /data/adb/battery_stats/discharge_session.csv ]; then echo discharge; "
                         + "elif [ -r /data/adb/battery_stats/app_usage.csv ]; then echo usage; "
                         + "fi",
                 900);
-        lastOk = out.contains("samples") || out.contains("usage");
+        lastOk = out.contains("samples") || out.contains("charge") || out.contains("discharge") || out.contains("usage");
         return lastOk;
+    }
+
+    private static int importChargeSession(StatsDatabase database) {
+        String csv = RootShell.chargeSessionText();
+        if (csv.length() == 0 || !csv.contains(",")) {
+            return 0;
+        }
+        int imported = 0;
+        String[] lines = csv.split("\\n");
+        for (String line : lines) {
+            if (line.startsWith("time_ms") || line.trim().length() == 0) {
+                continue;
+            }
+            String[] p = line.split(",", 11);
+            if (p.length < 9) {
+                continue;
+            }
+            try {
+                BatterySample sample = new BatterySample();
+                sample.timeMs = Long.parseLong(p[0].trim());
+                sample.level = Integer.parseInt(p[2].trim());
+                sample.status = Integer.parseInt(p[3].trim());
+                if (sample.status <= 0) {
+                    sample.status = BatteryManager.BATTERY_STATUS_CHARGING;
+                }
+                sample.currentA = Double.parseDouble(p[4].trim());
+                sample.voltageV = Double.parseDouble(p[5].trim());
+                sample.powerW = BatteryReader.clampPower(Double.parseDouble(p[6].trim()), true);
+                sample.tempC = Double.parseDouble(p[7].trim());
+                sample.screenOn = "1".equals(p[8].trim());
+                sample.foregroundPackage = "";
+                database.insert(sample);
+                imported++;
+            } catch (Exception ignored) {
+            }
+        }
+        return imported;
+    }
+
+    private static int importDischargeSession(StatsDatabase database) {
+        String csv = RootShell.dischargeSessionText();
+        if (csv.length() == 0 || !csv.contains(",")) {
+            return 0;
+        }
+        int imported = 0;
+        String[] lines = csv.split("\\n");
+        for (String line : lines) {
+            if (line.startsWith("time_ms") || line.trim().length() == 0) {
+                continue;
+            }
+            String[] p = line.split(",", 10);
+            if (p.length < 10) {
+                continue;
+            }
+            try {
+                BatterySample sample = new BatterySample();
+                sample.timeMs = Long.parseLong(p[0].trim());
+                sample.level = Integer.parseInt(p[2].trim());
+                sample.status = Integer.parseInt(p[3].trim());
+                if (sample.status <= 0) {
+                    sample.status = BatteryManager.BATTERY_STATUS_DISCHARGING;
+                }
+                sample.currentA = Double.parseDouble(p[4].trim());
+                sample.voltageV = Double.parseDouble(p[5].trim());
+                sample.powerW = BatteryReader.clampPower(Double.parseDouble(p[6].trim()), false);
+                sample.tempC = Double.parseDouble(p[7].trim());
+                sample.screenOn = "1".equals(p[8].trim());
+                sample.foregroundPackage = p[9].trim();
+                database.insert(sample);
+                imported++;
+            } catch (Exception ignored) {
+            }
+        }
+        return imported;
     }
 
     private static int importAppUsage(StatsDatabase database) {
